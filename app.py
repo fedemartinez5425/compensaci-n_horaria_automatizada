@@ -296,6 +296,14 @@ if pagina == "🔵 Panel Guardia":
         with col4:
             motivo = st.selectbox("📋 Motivo de salida *", MOTIVOS)
 
+        # Si selecciona "Otro", permitir especificar
+        motivo_otro = ""
+        if motivo == "Otro":
+            motivo_otro = st.text_input(
+                "✍️ Especificar motivo",
+                placeholder="Ej: Trámite bancario urgente"
+    )
+
         col5, col6, col7 = st.columns(3)
         with col5:
             hora_salida = st.time_input("🚪 Hora de salida *", value=time(8, 0), step=60)
@@ -369,7 +377,7 @@ if pagina == "🔵 Panel Guardia":
                         "hora_salida": hora_salida.strftime("%H:%M"),
                         "hora_entrada": ent_str,
                         "sin_retorno": "SI" if sin_retorno else "NO",
-                        "motivo": motivo,
+                        "motivo": motivo_otro if motivo == "Otro" else motivo,
                         "compensa": compensa,
                         "minutos_reales": mins_r if mins_r is not None else "",
                         "horas_redondeadas": hrs_r if hrs_r is not None else "",
