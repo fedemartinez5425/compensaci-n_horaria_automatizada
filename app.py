@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, date, time
-import plotly.express as px
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -20,23 +21,70 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-MOTIVOS = [
+# Hora de fin de turno en la fábrica (para calcular S/R)
+HORA_FIN_TURNO = time(15, 0)
+
+PASSWORD = "1234"
+
+PLANTAS = ["Fábrica San Juan", "Casa Central Bs. As."]
+
+# ── Motivos canónicos ──────────────────────────────────────────
+MOTIVOS_LISTA = [
     "Banco / Cajero",
     "Médico propio",
-    "Médico hijo/a",
-    "Obra social",
-    "ANSES",
+    "Familiar enfermo",
+    "Enfermedad propia",
+    "Obra social / ANSES",
     "Juzgado / Tribunales",
     "Registro Civil / DNI",
     "Escribanía",
-    "Emicar",
-    "Clínica",
+    "Emicar / Clínica",
     "Escuela hijo/a",
     "Cuidado familiar",
-    "Trámite personal",
     "Análisis de sangre",
+    "Trámite personal",
+    "Estudio / Clases",
+    "Duelo / Fallecimiento familiar",
     "Otro",
 ]
+
+# Mapeo para normalizar motivos históricos escritos a mano
+MOTIVO_MAP = {
+    "bco":                       "Banco / Cajero",
+    "banco":                     "Banco / Cajero",
+    "medico":                    "Médico propio",
+    "médico":                    "Médico propio",
+    "turno médico":              "Médico propio",
+    "turno medico":              "Médico propio",
+    "junta medica":              "Médico propio",
+    "junta médica":              "Médico propio",
+    "medico hijos":              "Familiar enfermo",
+    "hija enferma":              "Familiar enfermo",
+    "retiro hija + emicar":      "Familiar enfermo",
+    "enferma":                   "Enfermedad propia",
+    "enfermedad":                "Enfermedad propia",
+    "presión alta":              "Enfermedad propia",
+    "presion alta":              "Enfermedad propia",
+    "obra social":               "Obra social / ANSES",
+    "anses":                     "Obra social / ANSES",
+    "juzgado":                   "Juzgado / Tribunales",
+    "tribunales":                "Juzgado / Tribunales",
+    "ufi":                       "Juzgado / Tribunales",
+    "declarar estafa":           "Juzgado / Tribunales",
+    "registro civil":            "Registro Civil / DNI",
+    "dni":                       "Registro Civil / DNI",
+    "carnet de conducir":        "Registro Civil / DNI",
+    "escribania":                "Escribanía",
+    "escribanía":                "Escribanía",
+    "emicar":                    "Emicar / Clínica",
+    "sanatorio sj":              "Emicar / Clínica",
+    "analisis":                  "Análisis de sangre",
+    "análisis":                  "Análisis de sangre",
+    "ipv":                       "Trámite personal",
+    "personal":                  "Trámite personal",
+    "1 dia de clases":           "Estudio / Clases",
+    "fallecimiento familiar":    "Duelo / Fallecimiento familiar",
+}
 
 MESES = {
     1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
@@ -44,7 +92,12 @@ MESES = {
     9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
 }
 
-PASSWORD = "1234"
+
+def normalizar_motivo(raw: str) -> str:
+    """Convierte cualquier motivo crudo al canónico estandarizado."""
+    if not raw or pd.isna(raw):
+        return "Otro"
+    return MOTIVO_MAP.get(str(raw).strip().lower(), str(raw).strip().title())
 
 
 # ─────────────────────────────────────────────
@@ -54,7 +107,7 @@ def check_login():
     if "autenticado" not in st.session_state:
         st.session_state.autenticado = False
     if not st.session_state.autenticado:
-        st.title("🏭 Control de Permisos — Fábrica San Juan")
+        st.title("🏭 Control de Permisos")
         st.divider()
         st.write("Ingresá la contraseña para acceder.")
         clave = st.text_input("Contraseña", type="password", placeholder="••••")
@@ -70,15 +123,26 @@ check_login()
 
 
 # ─────────────────────────────────────────────
-# REDONDEO
+# REDONDEO DE HORAS
 # ─────────────────────────────────────────────
 def redondear_horas(minutos: float) -> float:
-    """< 30 min → 0h | 30–89 min → 1h | 90–149 min → 2h | etc."""
+    """
+    < 30 min  → 0h
+    30–89 min → 1h
+    90–149    → 2h  (fracción >= :30 sube al entero siguiente)
+    """
     if minutos is None or pd.isna(minutos) or minutos < 30:
         return 0.0
     parte = int(minutos // 60)
     fraccion = (minutos % 60) / 60
     return float(parte + 1) if fraccion >= 0.5 else float(parte)
+
+
+def minutos_entre(t_sal: time, t_ent: time) -> float:
+    """Minutos entre dos objetos time (mismo día)."""
+    ref = date.today()
+    delta = datetime.combine(ref, t_ent) - datetime.combine(ref, t_sal)
+    return round(delta.seconds / 60, 1)
 
 
 def fmt_dur(minutos: float) -> str:
@@ -91,8 +155,6 @@ def fmt_dur(minutos: float) -> str:
 
 # ─────────────────────────────────────────────
 # CONEXIÓN GOOGLE SHEETS
-# Cache largo para el cliente (no cambia)
-# Cache corto para los datos (se actualizan)
 # ─────────────────────────────────────────────
 @st.cache_resource(ttl=3600)
 def conectar_sheets():
@@ -107,7 +169,6 @@ def get_wb(_gc):
     return _gc.open_by_key(st.secrets["SHEET_ID"])
 
 
-# TTL 60s: el padrón cambia poco, no hace falta recargar seguido
 @st.cache_data(ttl=60)
 def leer_padron(_gc):
     ws = get_wb(_gc).worksheet("padron")
@@ -115,10 +176,10 @@ def leer_padron(_gc):
     if not df.empty:
         df["legajo"] = df["legajo"].astype(str).str.strip()
         df["nombre"] = df["nombre"].astype(str).str.strip().str.upper()
+        df["planta"] = df["planta"].astype(str).str.strip()
     return df
 
 
-# TTL 20s: permisos se cargan varias veces por día
 @st.cache_data(ttl=20)
 def leer_permisos(_gc):
     ws = get_wb(_gc).worksheet("permisos")
@@ -130,10 +191,12 @@ def leer_permisos(_gc):
     df["horas_redondeadas"] = pd.to_numeric(df["horas_redondeadas"], errors="coerce")
     df["compensa"] = df["compensa"].astype(str).str.upper().str.strip()
     df["legajo"] = df["legajo"].astype(str).str.strip()
+    df["planta"] = df["planta"].astype(str).str.strip()
+    # Normalizar motivos al leer
+    df["motivo"] = df["motivo"].apply(normalizar_motivo)
     return df
 
 
-# TTL 20s: compensaciones igual que permisos
 @st.cache_data(ttl=20)
 def leer_compensaciones(_gc):
     ws = get_wb(_gc).worksheet("compensaciones")
@@ -143,6 +206,7 @@ def leer_compensaciones(_gc):
     df["fecha_compensacion"] = pd.to_datetime(df["fecha_compensacion"], errors="coerce")
     df["horas_compensadas"] = pd.to_numeric(df["horas_compensadas"], errors="coerce")
     df["legajo"] = df["legajo"].astype(str).str.strip()
+    df["planta"] = df["planta"].astype(str).str.strip()
     return df
 
 
@@ -156,9 +220,9 @@ def guardar_compensacion(gc, fila: dict):
     leer_compensaciones.clear()
 
 
-def agregar_empleado(gc, legajo: str, nombre: str, sector: str = ""):
+def agregar_empleado(gc, legajo: str, nombre: str, sector: str, planta: str):
     get_wb(gc).worksheet("padron").append_row(
-        [legajo.strip(), nombre.upper().strip(), sector.strip(), "", "SI"],
+        [legajo.strip(), nombre.upper().strip(), sector.strip(), planta, "SI"],
         value_input_option="RAW"
     )
     leer_padron.clear()
@@ -171,11 +235,11 @@ def generar_id(prefijo="P"):
 # ─────────────────────────────────────────────
 # CALCULAR SALDOS
 # ─────────────────────────────────────────────
-def calcular_saldos(permisos: pd.DataFrame, compensaciones: pd.DataFrame) -> pd.DataFrame:
+def calcular_saldos(permisos_df: pd.DataFrame, comp_df: pd.DataFrame) -> pd.DataFrame:
     cols = ["legajo", "nombre", "debe", "compensado", "saldo"]
-    if permisos.empty:
+    if permisos_df.empty:
         return pd.DataFrame(columns=cols)
-    p = permisos[permisos["compensa"] == "SI"].copy()
+    p = permisos_df[permisos_df["compensa"] == "SI"].copy()
     if p.empty:
         return pd.DataFrame(columns=cols)
     debe = (
@@ -183,9 +247,9 @@ def calcular_saldos(permisos: pd.DataFrame, compensaciones: pd.DataFrame) -> pd.
         .sum().reset_index()
         .rename(columns={"horas_redondeadas": "debe"})
     )
-    if not compensaciones.empty:
+    if not comp_df.empty:
         comp = (
-            compensaciones.groupby("legajo")["horas_compensadas"]
+            comp_df.groupby("legajo")["horas_compensadas"]
             .sum().reset_index()
             .rename(columns={"horas_compensadas": "compensado"})
         )
@@ -199,7 +263,7 @@ def calcular_saldos(permisos: pd.DataFrame, compensaciones: pd.DataFrame) -> pd.
 
 
 # ─────────────────────────────────────────────
-# CARGAR DATOS (con spinner para feedback)
+# CARGAR DATOS
 # ─────────────────────────────────────────────
 try:
     gc = conectar_sheets()
@@ -209,25 +273,24 @@ except Exception as e:
 
 try:
     with st.spinner("Cargando datos..."):
-        padron      = leer_padron(gc)
-        permisos    = leer_permisos(gc)
+        padron         = leer_padron(gc)
+        permisos       = leer_permisos(gc)
         compensaciones = leer_compensaciones(gc)
 except Exception as e:
     st.error(f"Error al leer datos: {e}")
     st.stop()
 
-# Diccionarios de lookup (construidos una vez por sesión)
-padron_dict       = dict(zip(padron["legajo"], padron["nombre"])) if not padron.empty else {}
-nombre_a_legajo   = dict(zip(padron["nombre"], padron["legajo"])) if not padron.empty else {}
-nombres_en_padron = sorted(padron["nombre"].tolist()) if not padron.empty else []
-
 
 # ─────────────────────────────────────────────
-# SIDEBAR
+# SIDEBAR — selección de planta + navegación
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🏭 Control de Permisos")
     st.caption(f"Hoy: {date.today().strftime('%d/%m/%Y')}")
+    st.divider()
+
+    planta_activa = st.selectbox("📍 Planta", PLANTAS)
+
     st.divider()
     pagina = st.radio(
         "Sección:",
@@ -239,26 +302,34 @@ with st.sidebar:
         st.session_state.autenticado = False
         st.rerun()
 
+# Filtrar datos por planta seleccionada
+KEY_PLANTA = "Fábrica" if "San Juan" in planta_activa else "Casa Central"
+
+padron_planta = padron[padron["planta"] == KEY_PLANTA].copy() if not padron.empty else padron
+permisos_planta = permisos[permisos["planta"] == KEY_PLANTA].copy() if not permisos.empty else permisos
+comp_planta = compensaciones[compensaciones["planta"] == KEY_PLANTA].copy() if not compensaciones.empty else compensaciones
+
+padron_dict     = dict(zip(padron_planta["legajo"], padron_planta["nombre"])) if not padron_planta.empty else {}
+nombre_a_legajo = dict(zip(padron_planta["nombre"], padron_planta["legajo"])) if not padron_planta.empty else {}
+nombres_lista   = sorted(padron_planta["nombre"].tolist()) if not padron_planta.empty else []
+
 
 # ═══════════════════════════════════════════════════════════════
 # PANEL GUARDIA
 # ═══════════════════════════════════════════════════════════════
 if pagina == "🔵 Panel Guardia":
 
-    st.title("👋 ¡Hola, Guardia!")
+    st.title(f"👋 ¡Hola, Guardia! — {planta_activa}")
     st.write("Buscá a la persona por nombre y completá los datos del permiso.")
     st.divider()
 
-    # ── Búsqueda por nombre (selectbox con todos los del padrón) ──
+    # ── Búsqueda por nombre ──
     st.subheader("¿Quién sale?")
-
-    # Opción vacía al inicio para que el guardia elija
-    opciones_nombre = ["— Seleccioná un nombre —"] + nombres_en_padron
-
+    opciones = ["— Seleccioná un nombre —"] + nombres_lista
     nombre_sel = st.selectbox(
-        "Nombre completo del empleado/a",
-        opciones_nombre,
-        help="Escribí las primeras letras para filtrar la lista.",
+        "Nombre completo",
+        opciones,
+        help="Escribí las primeras letras para filtrar.",
     )
 
     legajo_resuelto = ""
@@ -267,25 +338,20 @@ if pagina == "🔵 Panel Guardia":
     if nombre_sel and nombre_sel != "— Seleccioná un nombre —":
         legajo_resuelto = nombre_a_legajo.get(nombre_sel, "")
         nombre_resuelto = nombre_sel
-        col_info1, col_info2 = st.columns(2)
-        col_info1.success(f"✅ **{nombre_resuelto}**")
-        col_info2.info(f"Legajo: **{legajo_resuelto}**" if legajo_resuelto else "Sin legajo asignado")
+        ci1, ci2 = st.columns(2)
+        ci1.success(f"✅ **{nombre_resuelto}**")
+        ci2.info(f"Legajo: **{legajo_resuelto}**" if legajo_resuelto else "Sin legajo")
 
-    # Legajo opcional (solo si no se encontró por nombre o quiere verificar)
-    with st.expander("🔢 Ingresar legajo manualmente (opcional)"):
-        legajo_manual = st.text_input("Legajo", placeholder="Ej: 2621")
-        if legajo_manual.strip() and legajo_manual.strip() in padron_dict:
-            nombre_por_legajo = padron_dict[legajo_manual.strip()]
-            st.success(f"✅ {nombre_por_legajo} (legajo {legajo_manual.strip()})")
-            # Si se ingresó legajo y es válido, tiene prioridad
-            legajo_resuelto = legajo_manual.strip()
-            nombre_resuelto = nombre_por_legajo
-        elif legajo_manual.strip():
-            st.warning("Legajo no encontrado en el padrón.")
+    with st.expander("🔢 Buscar por legajo (opcional)"):
+        leg_manual = st.text_input("Legajo", placeholder="Ej: 2621")
+        if leg_manual.strip() in padron_dict:
+            nombre_resuelto = padron_dict[leg_manual.strip()]
+            legajo_resuelto = leg_manual.strip()
+            st.success(f"✅ {nombre_resuelto}")
+        elif leg_manual.strip():
+            st.warning("Legajo no encontrado.")
 
     st.divider()
-
-    # ── Formulario principal ──
     st.subheader("Datos del permiso")
 
     with st.form("form_guardia", clear_on_submit=True):
@@ -294,15 +360,16 @@ if pagina == "🔵 Panel Guardia":
         with col3:
             fecha_permiso = st.date_input("📅 Fecha", value=date.today(), format="DD/MM/YYYY")
         with col4:
-            motivo = st.selectbox("📋 Motivo de salida *", MOTIVOS)
+            motivo_sel = st.selectbox("📋 Motivo *", MOTIVOS_LISTA)
 
-        # Si selecciona "Otro", permitir especificar
+        # Si elige "Otro", mostrar campo libre
         motivo_otro = ""
-        if motivo == "Otro":
+        if motivo_sel == "Otro":
             motivo_otro = st.text_input(
-                "✍️ Especificar motivo",
-                placeholder="Ej: Trámite bancario urgente"
-    )
+                "Especificá el motivo",
+                placeholder="Ej: Trámite bancario especial",
+                max_chars=80,
+            )
 
         col5, col6, col7 = st.columns(3)
         with col5:
@@ -318,27 +385,33 @@ if pagina == "🔵 Panel Guardia":
             )
 
         compensa = st.radio(
-            "💰 ¿Va a compensar las horas?",
+            "💰 ¿Va a compensar las horas? *",
             ["SI", "NO"],
             horizontal=True,
             help="SI = se queda horas extra otro día. NO = no se descuenta.",
         )
+        registrado_por = st.text_input("👮 Tu nombre *", placeholder="Ej: García Juan")
 
-        registrado_por = st.text_input(
-            "👮 Tu nombre (guardia) *",
-            placeholder="Ej: García Juan",
-        )
-
-        # Previsualización del cálculo
-        if not sin_retorno and hora_entrada > hora_salida:
-            mins_prev = (
-                datetime.combine(date.today(), hora_entrada)
-                - datetime.combine(date.today(), hora_salida)
-            ).seconds / 60
-            hrs_prev = redondear_horas(mins_prev)
+        # ── PREVISUALIZACIÓN ──
+        # S/R: se calcula contra fin de turno (15:00)
+        # Normal: diferencia entre salida y entrada
+        if sin_retorno:
+            if hora_salida < HORA_FIN_TURNO:
+                mins_prev = minutos_entre(hora_salida, HORA_FIN_TURNO)
+                hrs_prev  = redondear_horas(mins_prev)
+                st.info(
+                    f"🔴 Sin retorno — salió a las {hora_salida.strftime('%H:%M')}, "
+                    f"fin de turno 15:00 → **{fmt_dur(mins_prev)} real** "
+                    f"→ {'**' + str(int(hrs_prev)) + 'h a compensar**' if compensa == 'SI' else 'no compensa'}"
+                )
+            else:
+                st.warning("La hora de salida es posterior al fin de turno (15:00). Verificá.")
+        elif hora_entrada > hora_salida:
+            mins_prev = minutos_entre(hora_salida, hora_entrada)
+            hrs_prev  = redondear_horas(mins_prev)
             st.info(
-                f"⏱ Tiempo real fuera: **{fmt_dur(mins_prev)}** → "
-                f"Horas a compensar (redondeado): **{int(hrs_prev)}h**"
+                f"⏱ Tiempo real fuera: **{fmt_dur(mins_prev)}** "
+                f"→ Horas a compensar: **{int(hrs_prev)}h**"
             )
 
         submitted = st.form_submit_button(
@@ -346,11 +419,14 @@ if pagina == "🔵 Panel Guardia":
         )
 
         if submitted:
+            motivo_final = motivo_otro.strip() if motivo_sel == "Otro" and motivo_otro.strip() else motivo_sel
             errores = []
             if not nombre_resuelto:
                 errores.append("Seleccioná o buscá a la persona primero.")
             if not registrado_por.strip():
                 errores.append("Falta tu nombre.")
+            if sin_retorno and hora_salida >= HORA_FIN_TURNO:
+                errores.append("Hora de salida posterior al fin de turno (15:00). Verificá.")
             if not sin_retorno and hora_entrada <= hora_salida:
                 errores.append("La hora de entrada debe ser posterior a la salida.")
 
@@ -359,91 +435,84 @@ if pagina == "🔵 Panel Guardia":
                     st.error(f"❌ {e}")
             else:
                 if sin_retorno:
-                    mins_r, hrs_r, ent_str = None, None, "S/R"
+                    # Calcular contra fin de turno
+                    mins_r = minutos_entre(hora_salida, HORA_FIN_TURNO)
+                    hrs_r  = redondear_horas(mins_r) if compensa == "SI" else 0.0
+                    ent_str = "S/R"
                 else:
-                    mins_r = round((
-                        datetime.combine(date.today(), hora_entrada)
-                        - datetime.combine(date.today(), hora_salida)
-                    ).seconds / 60, 1)
-                    hrs_r = redondear_horas(mins_r)
+                    mins_r = minutos_entre(hora_salida, hora_entrada)
+                    hrs_r  = redondear_horas(mins_r)
                     ent_str = hora_entrada.strftime("%H:%M")
 
                 try:
                     guardar_permiso(gc, {
-                        "id": generar_id("P"),
-                        "fecha": fecha_permiso.strftime("%Y-%m-%d"),
-                        "legajo": legajo_resuelto,
-                        "nombre": nombre_resuelto,
-                        "hora_salida": hora_salida.strftime("%H:%M"),
-                        "hora_entrada": ent_str,
-                        "sin_retorno": "SI" if sin_retorno else "NO",
-                        "motivo": motivo_otro if motivo == "Otro" else motivo,
-                        "compensa": compensa,
-                        "minutos_reales": mins_r if mins_r is not None else "",
-                        "horas_redondeadas": hrs_r if hrs_r is not None else "",
-                        "registrado_por": registrado_por.strip(),
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "id":               generar_id("P"),
+                        "fecha":            fecha_permiso.strftime("%Y-%m-%d"),
+                        "legajo":           legajo_resuelto,
+                        "nombre":           nombre_resuelto,
+                        "hora_salida":      hora_salida.strftime("%H:%M"),
+                        "hora_entrada":     ent_str,
+                        "sin_retorno":      "SI" if sin_retorno else "NO",
+                        "motivo":           motivo_final,
+                        "compensa":         compensa,
+                        "minutos_reales":   round(mins_r, 1),
+                        "horas_redondeadas": hrs_r,
+                        "registrado_por":   registrado_por.strip(),
+                        "planta":           KEY_PLANTA,
+                        "timestamp":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                     st.success(f"✅ Registro guardado — {nombre_resuelto}")
-                    if not sin_retorno and mins_r:
-                        st.info(
-                            f"Tiempo fuera: {fmt_dur(mins_r)} → **{int(hrs_r)}h a compensar**"
-                        )
+                    st.info(
+                        f"Tiempo fuera: {fmt_dur(mins_r)} → "
+                        f"**{int(hrs_r)}h a compensar**"
+                        if compensa == "SI" else
+                        f"Tiempo fuera: {fmt_dur(mins_r)} — no compensa"
+                    )
                 except Exception as e:
                     st.error(f"❌ Error al guardar: {e}")
 
-    # ── Registros de hoy ──
+    # Registros del día
     st.divider()
     st.subheader("Registros de hoy")
-    if not permisos.empty:
-        hoy = permisos[permisos["fecha"].dt.date == date.today()]
+    if not permisos_planta.empty:
+        hoy = permisos_planta[permisos_planta["fecha"].dt.date == date.today()]
         if hoy.empty:
             st.caption("Aún no hay registros hoy.")
         else:
-            hoy_s = hoy[["nombre", "hora_salida", "hora_entrada", "motivo", "compensa", "horas_redondeadas"]].copy()
-            hoy_s.columns = ["Nombre", "Salida", "Entrada", "Motivo", "Compensa", "Hs."]
-            st.dataframe(hoy_s, use_container_width=True, hide_index=True)
+            hs = hoy[["nombre", "hora_salida", "hora_entrada", "sin_retorno", "motivo", "compensa", "horas_redondeadas"]].copy()
+            hs.columns = ["Nombre", "Salida", "Entrada", "S/R", "Motivo", "Compensa", "Hs."]
+            st.dataframe(hs, use_container_width=True, hide_index=True)
     else:
-        st.caption("No hay registros cargados aún.")
+        st.caption("No hay registros aún.")
 
-    # ── Agregar empleado nuevo ──
+    # Agregar empleado
     st.divider()
     with st.expander("➕ Agregar empleado que no está en la lista"):
         st.caption(
-            "Usá esto solo si la persona no aparece en la lista de arriba. "
-            "El nombre debe ser completo (apellido/s y nombre/s). "
-            "No puede haber dos personas con el mismo nombre completo."
+            "Usá esto solo si la persona no aparece en el listado. "
+            "El nombre debe ser completo — no puede haber dos personas con el mismo nombre."
         )
         with st.form("form_nuevo"):
             cn1, cn2 = st.columns(2)
             with cn1:
                 nvo_leg = st.text_input("Legajo (opcional)", placeholder="Ej: 3050")
             with cn2:
-                nvo_nom = st.text_input(
-                    "Apellido y Nombre completo *",
-                    placeholder="Ej: GOMEZ PEREZ, CARLOS ALBERTO",
-                )
+                nvo_nom = st.text_input("Apellido y Nombre *", placeholder="Ej: GOMEZ, CARLOS ALBERTO")
             nvo_sec = st.text_input("Sector (opcional)")
             if st.form_submit_button("Agregar al padrón", use_container_width=True):
-                nvo_nom_clean = nvo_nom.strip().upper()
-                errores_nuevo = []
-                if not nvo_nom_clean:
-                    errores_nuevo.append("El nombre es obligatorio.")
-                if nvo_nom_clean in nombre_a_legajo:
-                    errores_nuevo.append(
-                        f"Ya existe una persona con ese nombre: {nvo_nom_clean}. "
-                        "Agregá el segundo nombre o apellido para distinguirlos."
-                    )
-                if errores_nuevo:
-                    for e in errores_nuevo:
+                nom_clean = nvo_nom.strip().upper()
+                err = []
+                if not nom_clean:
+                    err.append("El nombre es obligatorio.")
+                if nom_clean in nombre_a_legajo:
+                    err.append(f"Ya existe '{nom_clean}'. Agregá segundo nombre o apellido.")
+                if err:
+                    for e in err:
                         st.error(f"❌ {e}")
                 else:
                     try:
-                        agregar_empleado(gc, nvo_leg.strip(), nvo_nom_clean, nvo_sec.strip())
-                        st.success(
-                            f"✅ {nvo_nom_clean} agregado. "
-                            "Recargá la página para encontrarlo en la lista."
-                        )
+                        agregar_empleado(gc, nvo_leg.strip(), nom_clean, nvo_sec.strip(), KEY_PLANTA)
+                        st.success(f"✅ {nom_clean} agregado. Recargá la página.")
                     except Exception as e:
                         st.error(f"❌ Error: {e}")
 
@@ -453,107 +522,84 @@ if pagina == "🔵 Panel Guardia":
 # ═══════════════════════════════════════════════════════════════
 elif pagina == "🟢 Panel RRHH":
 
-    st.title("👋 ¡Hola, RRHH!")
-    st.write("Resumen de permisos y compensaciones del período seleccionado.")
+    st.title(f"👋 ¡Hola, RRHH! — {planta_activa}")
+    st.write("Resumen de permisos y compensaciones.")
     st.divider()
 
-    # Filtros
     col_f1, col_f2, col_f3 = st.columns([1, 1, 2])
     with col_f1:
         año_sel = st.selectbox("Año", [2025, 2026], index=1)
     with col_f2:
         mes_sel = st.selectbox(
-            "Mes",
-            list(MESES.keys()),
+            "Mes", list(MESES.keys()),
             index=datetime.now().month - 1,
             format_func=lambda x: MESES[x],
         )
     with col_f3:
-        modo = st.radio(
-            "Vista:",
-            ["Solo este mes", "Saldo acumulado total"],
-            horizontal=True,
-        )
+        modo = st.radio("Vista:", ["Solo este mes", "Saldo acumulado total"], horizontal=True)
 
-    if permisos.empty:
-        st.warning("No hay permisos cargados todavía.")
+    if permisos_planta.empty:
+        st.warning("No hay permisos cargados para esta planta.")
         st.stop()
 
     if modo == "Solo este mes":
-        p_f = permisos[
-            (permisos["fecha"].dt.year == año_sel) &
-            (permisos["fecha"].dt.month == mes_sel)
+        p_f = permisos_planta[
+            (permisos_planta["fecha"].dt.year == año_sel) &
+            (permisos_planta["fecha"].dt.month == mes_sel)
         ].copy()
-        c_f = compensaciones[
-            (compensaciones["fecha_compensacion"].dt.year == año_sel) &
-            (compensaciones["fecha_compensacion"].dt.month == mes_sel)
-        ].copy() if not compensaciones.empty else compensaciones.copy()
+        c_f = comp_planta[
+            (comp_planta["fecha_compensacion"].dt.year == año_sel) &
+            (comp_planta["fecha_compensacion"].dt.month == mes_sel)
+        ].copy() if not comp_planta.empty else comp_planta.copy()
     else:
-        p_f = permisos.copy()
-        c_f = compensaciones.copy()
+        p_f = permisos_planta.copy()
+        c_f = comp_planta.copy()
 
     saldos = calcular_saldos(p_f, c_f)
-    comp_total = (
-        c_f["horas_compensadas"].sum()
-        if not c_f.empty and "horas_compensadas" in c_f.columns
-        else 0
-    )
+    comp_total = c_f["horas_compensadas"].sum() if not c_f.empty and "horas_compensadas" in c_f.columns else 0
 
-    # ── Métricas ──
-    st.divider()
+    # Métricas
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     col_m1.metric("📋 Permisos registrados", len(p_f))
     col_m2.metric("👥 Personas con deuda", len(saldos))
-    col_m3.metric(
-        "⏳ Horas pendientes",
-        f"{saldos['saldo'].sum():.0f}h" if not saldos.empty else "0h",
-    )
+    col_m3.metric("⏳ Horas pendientes", f"{saldos['saldo'].sum():.0f}h" if not saldos.empty else "0h")
     col_m4.metric("✅ Horas compensadas", f"{comp_total:.0f}h")
 
-    # ── REPORTE PARA GERENCIA ──
+    # ── Reporte para gerencia ──
     st.divider()
     st.subheader(f"📄 Reporte para Gerencia — {MESES[mes_sel]} {año_sel}")
     st.caption(
-        "Esta tabla muestra quiénes deben compensar horas y cuántas. "
-        "Sacale captura de pantalla y enviala a la gerenta de planta."
+        "Quiénes deben compensar horas y cuántas. "
+        "Sacá captura y enviá a gerencia de planta."
     )
 
     if saldos.empty:
-        st.success(
-            f"✅ Todo en orden — Ningún empleado tiene horas pendientes "
-            f"en {MESES[mes_sel]} {año_sel}."
-        )
+        st.success(f"✅ Ningún empleado tiene horas pendientes en {MESES[mes_sel]} {año_sel}.")
     else:
-        # Tabla limpia, solo lo que la gerenta necesita ver
-        reporte = saldos[["nombre", "saldo"]].copy()
-        reporte.columns = ["Apellido y Nombre", "Horas a compensar"]
-        reporte["Horas a compensar"] = reporte["Horas a compensar"].apply(
-            lambda x: f"{int(x)}h"
-        )
-        reporte.index = range(1, len(reporte) + 1)  # numerado desde 1
-
-        st.dataframe(
-            reporte,
-            use_container_width=True,
-            height=min(500, 45 + len(reporte) * 35),
-        )
-        st.caption(
-            f"Total: **{len(reporte)} personas** con **{saldos['saldo'].sum():.0f}h** pendientes."
-        )
+        reporte = saldos[["nombre", "debe", "compensado", "saldo"]].copy()
+        reporte["debe"]      = reporte["debe"].apply(lambda x: f"{x:.0f}h")
+        reporte["compensado"] = reporte["compensado"].apply(lambda x: f"{x:.0f}h")
+        reporte["saldo"]     = saldos["saldo"].apply(lambda x: f"{x:.0f}h")
+        reporte.columns      = ["Apellido y Nombre", "Debe", "Ya compensó", "Saldo pendiente"]
+        reporte.index        = range(1, len(reporte) + 1)
+        st.dataframe(reporte, use_container_width=True, height=min(500, 45 + len(reporte) * 35))
+        st.caption(f"**{len(reporte)} personas** — **{saldos['saldo'].sum():.0f}h** pendientes en total.")
 
     # ── Registrar compensación ──
     st.divider()
     st.subheader("✏️ Registrar compensación")
-    st.caption("Cuando alguien se queda horas extra para compensar, registralo acá.")
+    st.caption("Cuando alguien se queda horas extra para compensar.")
 
-    opciones_comp = ["— Seleccioná un nombre —"] + nombres_en_padron
     with st.form("form_comp"):
-        nombre_comp_sel = st.selectbox("Nombre del empleado/a", opciones_comp)
+        nombre_comp_sel = st.selectbox(
+            "Empleado/a",
+            ["— Seleccioná un nombre —"] + nombres_lista,
+        )
         nom_c = nombre_comp_sel if nombre_comp_sel != "— Seleccioná un nombre —" else ""
         leg_c = nombre_a_legajo.get(nom_c, "") if nom_c else ""
 
-        if nom_c:
-            saldo_actual = saldos[saldos["nombre"] == nom_c]["saldo"].sum() if not saldos.empty else 0
+        if nom_c and not saldos.empty:
+            saldo_actual = saldos[saldos["nombre"] == nom_c]["saldo"].sum()
             if saldo_actual > 0:
                 st.info(f"Saldo pendiente de **{nom_c}**: **{saldo_actual:.0f}h**")
             else:
@@ -561,46 +607,36 @@ elif pagina == "🟢 Panel RRHH":
 
         cc3, cc4 = st.columns(2)
         with cc3:
-            fecha_comp = st.date_input(
-                "Fecha en que compensó", value=date.today(), format="DD/MM/YYYY"
-            )
+            fecha_comp = st.date_input("Fecha en que compensó", value=date.today(), format="DD/MM/YYYY")
         with cc4:
-            hs_comp = st.number_input(
-                "Horas compensadas", min_value=0.5, max_value=8.0, value=1.0, step=0.5
-            )
+            hs_comp = st.number_input("Horas compensadas", min_value=0.5, max_value=8.0, value=1.0, step=0.5)
 
-        obs = st.text_input(
-            "Observación (opcional)", placeholder="Ej: se quedó al final del turno"
-        )
+        obs     = st.text_input("Observación (opcional)", placeholder="Ej: se quedó al final del turno")
         registra = st.text_input("Tu nombre *")
 
-        if st.form_submit_button(
-            "✅ REGISTRAR COMPENSACIÓN", use_container_width=True, type="primary"
-        ):
+        if st.form_submit_button("✅ REGISTRAR COMPENSACIÓN", use_container_width=True, type="primary"):
             if not nom_c:
-                st.error("❌ Seleccioná a la persona primero.")
+                st.error("❌ Seleccioná a la persona.")
             elif not registra.strip():
                 st.error("❌ Falta tu nombre.")
             else:
                 try:
                     guardar_compensacion(gc, {
-                        "id": generar_id("C"),
+                        "id":                generar_id("C"),
                         "fecha_compensacion": fecha_comp.strftime("%Y-%m-%d"),
-                        "legajo": leg_c,
-                        "nombre": nom_c,
+                        "legajo":            leg_c,
+                        "nombre":            nom_c,
                         "horas_compensadas": hs_comp,
-                        "observacion": obs,
-                        "registrado_por": registra.strip(),
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "observacion":       obs,
+                        "registrado_por":    registra.strip(),
+                        "planta":            KEY_PLANTA,
+                        "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
-                    st.success(
-                        f"✅ {nom_c} — {hs_comp}h compensadas el "
-                        f"{fecha_comp.strftime('%d/%m/%Y')}"
-                    )
+                    st.success(f"✅ {nom_c} — {hs_comp}h el {fecha_comp.strftime('%d/%m/%Y')}")
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
 
-    # ── Detalle del período ──
+    # Detalle del período
     st.divider()
     st.subheader("🔍 Detalle de permisos del período")
     if not p_f.empty:
@@ -609,30 +645,27 @@ elif pagina == "🟢 Panel RRHH":
             "sin_retorno", "motivo", "compensa", "horas_redondeadas"
         ]].copy()
         det["fecha"] = det["fecha"].dt.strftime("%d/%m/%Y")
-        det.columns = [
-            "Fecha", "Legajo", "Nombre", "Salida", "Entrada",
-            "S/R", "Motivo", "Compensa", "Hs."
-        ]
+        det.columns = ["Fecha", "Legajo", "Nombre", "Salida", "Entrada", "S/R", "Motivo", "Compensa", "Hs."]
         st.dataframe(det, use_container_width=True, hide_index=True)
     else:
         st.info("No hay permisos en este período.")
 
 
 # ═══════════════════════════════════════════════════════════════
-# ANÁLISIS DE DATOS
+# ANÁLISIS
 # ═══════════════════════════════════════════════════════════════
 elif pagina == "📊 Análisis":
 
-    st.title("📊 Análisis de Permisos")
+    st.title(f"📊 Análisis de Permisos — {planta_activa}")
     st.caption("Datos históricos 2025–2026.")
 
-    if permisos.empty:
-        st.warning("No hay datos para analizar aún.")
+    if permisos_planta.empty:
+        st.warning("No hay datos para analizar en esta planta.")
         st.stop()
 
-    df = permisos.copy()
-    df["año"] = df["fecha"].dt.year
-    df["mes"] = df["fecha"].dt.month
+    df = permisos_planta.copy()
+    df["año"]       = df["fecha"].dt.year
+    df["mes"]       = df["fecha"].dt.month
     df["año_semana"] = df["fecha"].dt.strftime("%Y-S%V")
 
     años_disp = sorted(df["año"].dropna().unique().tolist())
@@ -646,39 +679,67 @@ elif pagina == "📊 Análisis":
     st.divider()
 
     # ── 1. Permisos por semana ──
-    st.subheader("Permisos registrados por semana")
+    st.subheader("Permisos por semana")
     sem = df.groupby("año_semana").size().reset_index(name="cantidad")
-    fig1 = px.bar(
-        sem, x="año_semana", y="cantidad", text="cantidad",
-        labels={"año_semana": "Semana", "cantidad": "Permisos"},
-        color_discrete_sequence=["#1B4F9B"],
+    prom = sem["cantidad"].mean()
+    max_sem = sem["cantidad"].max()
+
+    # Color especial para la semana con más permisos
+    colores_sem = ["#C0392B" if v == max_sem else "#1B4F9B" for v in sem["cantidad"]]
+
+    fig1 = go.Figure(go.Bar(
+        x=sem["año_semana"],
+        y=sem["cantidad"],
+        text=sem["cantidad"],
+        textposition="outside",
+        marker_color=colores_sem,
+        hovertemplate="%{x}: %{y} permisos<extra></extra>",
+    ))
+    fig1.add_hline(
+        y=prom, line_dash="dash", line_color="#7F8C8D",
+        annotation_text=f"Promedio: {prom:.1f}",
+        annotation_position="top left",
     )
-    fig1.update_traces(textposition="outside")
     fig1.update_layout(
         plot_bgcolor="white", height=280,
-        margin=dict(t=10, b=10), showlegend=False,
+        margin=dict(t=30, b=10, l=10, r=10),
+        xaxis_title="", yaxis_title="Permisos",
+        showlegend=False,
     )
     st.plotly_chart(fig1, use_container_width=True)
-    st.caption(f"Promedio semanal: **{sem['cantidad'].mean():.1f} permisos**")
+    st.caption(
+        f"Promedio semanal: **{prom:.1f} permisos** — "
+        f"La semana con más permisos fue **{sem.loc[sem['cantidad'].idxmax(), 'año_semana']}** "
+        f"({max_sem} permisos, marcada en rojo)."
+    )
 
     st.divider()
 
     # ── 2. Pareto de motivos ──
-    st.subheader("¿Por qué salen? — Motivos principales")
-    mc = df["motivo"].str.strip().value_counts().reset_index()
+    st.subheader("¿Por qué salen? — Motivos principales (Pareto 80%)")
+    mc = df["motivo"].value_counts().reset_index()
     mc.columns = ["Motivo", "Cantidad"]
     mc["acum_pct"] = (mc["Cantidad"].cumsum() / mc["Cantidad"].sum() * 100)
-    pareto = mc[mc["acum_pct"].shift(1, fill_value=0) < 80].head(6)
+    pareto = mc[mc["acum_pct"].shift(1, fill_value=0) < 80].head(8)
 
-    fig2 = px.bar(
-        pareto, x="Cantidad", y="Motivo", orientation="h",
-        text="Cantidad", color_discrete_sequence=["#2471D5"],
-        labels={"Motivo": "", "Cantidad": "Veces"},
-    )
-    fig2.update_traces(textposition="outside")
+    max_mot = pareto["Cantidad"].max()
+    colores_mot = ["#C0392B" if v == max_mot else "#2471D5" for v in pareto["Cantidad"]]
+
+    fig2 = go.Figure(go.Bar(
+        x=pareto["Cantidad"],
+        y=pareto["Motivo"],
+        orientation="h",
+        text=pareto["Cantidad"],
+        textposition="outside",
+        marker_color=colores_mot,
+        hovertemplate="%{y}: %{x} veces<extra></extra>",
+    ))
     fig2.update_layout(
-        plot_bgcolor="white", height=260, margin=dict(t=10, b=10),
+        plot_bgcolor="white", height=max(250, len(pareto) * 40),
+        margin=dict(t=10, b=10, l=10, r=60),
+        xaxis_title="Cantidad", yaxis_title="",
         yaxis={"categoryorder": "total ascending"},
+        showlegend=False,
     )
     st.plotly_chart(fig2, use_container_width=True)
     if not pareto.empty:
@@ -690,34 +751,48 @@ elif pagina == "📊 Análisis":
 
     st.divider()
 
-    # ── 3. Duración ──
+    # ── 3. Duración corregida ──
     st.subheader("¿Cuánto tiempo suelen estar fuera?")
+
     df_dur = df[df["minutos_reales"].notna() & (df["minutos_reales"] > 0)].copy()
 
     if not df_dur.empty:
         def cat_dur(m):
-            if m < 30:   return "< 30 min"
-            elif m < 60: return "30–60 min"
-            elif m < 90: return "1h – 1h30"
-            else:        return "Más de 1h30"
+            if m < 30:    return "< 30 min"
+            elif m < 60:  return "30 – 60 min"
+            elif m < 90:  return "1h – 1h 30min"
+            elif m < 120: return "1h 30min – 2h"
+            else:         return "Más de 2h"
 
+        orden = ["< 30 min", "30 – 60 min", "1h – 1h 30min", "1h 30min – 2h", "Más de 2h"]
         df_dur["rango"] = df_dur["minutos_reales"].apply(cat_dur)
-        orden = ["< 30 min", "30–60 min", "1h – 1h30", "Más de 1h30"]
-        c = df_dur["rango"].value_counts().reindex(orden, fill_value=0).reset_index()
+        c = (
+            df_dur["rango"]
+            .value_counts()
+            .reindex(orden, fill_value=0)
+            .reset_index()
+        )
         c.columns = ["Rango", "Cantidad"]
         c["Pct"] = (c["Cantidad"] / c["Cantidad"].sum() * 100).round(1)
 
+        max_dur = c["Cantidad"].max()
+        colores_dur = ["#C0392B" if v == max_dur else "#1B4F9B" for v in c["Cantidad"]]
+
         cd1, cd2 = st.columns([2, 1])
         with cd1:
-            fig3 = px.bar(
-                c, x="Rango", y="Cantidad",
+            fig3 = go.Figure(go.Bar(
+                x=c["Rango"],
+                y=c["Cantidad"],
                 text=c["Pct"].apply(lambda x: f"{x}%"),
-                color_discrete_sequence=["#1B4F9B"],
-                labels={"Rango": "", "Cantidad": "Permisos"},
-            )
-            fig3.update_traces(textposition="outside")
+                textposition="outside",
+                marker_color=colores_dur,
+                hovertemplate="%{x}: %{y} permisos (%{text})<extra></extra>",
+            ))
             fig3.update_layout(
-                plot_bgcolor="white", height=250, margin=dict(t=10, b=10)
+                plot_bgcolor="white", height=270,
+                margin=dict(t=10, b=10, l=10, r=10),
+                xaxis_title="", yaxis_title="Permisos",
+                showlegend=False,
             )
             st.plotly_chart(fig3, use_container_width=True)
         with cd2:
@@ -727,7 +802,13 @@ elif pagina == "📊 Análisis":
                 hide_index=True,
             )
             mayor = c.loc[c["Cantidad"].idxmax()]
-            st.caption(f"El **{mayor['Pct']}%** son permisos de {mayor['Rango'].lower()}.")
+            prom_min = df_dur["minutos_reales"].mean()
+            st.caption(
+                f"Rango más frecuente: **{mayor['Rango']}** ({mayor['Pct']}%).\n\n"
+                f"Promedio real de ausencia: **{fmt_dur(prom_min)}**."
+            )
+    else:
+        st.info("No hay datos de duración suficientes para este período.")
 
     st.divider()
 
@@ -736,15 +817,39 @@ elif pagina == "📊 Análisis":
     ratio = df["compensa"].value_counts().reset_index()
     ratio.columns = ["Compensa", "Cantidad"]
     total_r = ratio["Cantidad"].sum()
-    cr1, cr2 = st.columns(2)
-    for _, row in ratio.iterrows():
-        pct = row["Cantidad"] / total_r * 100
-        col = cr1 if row["Compensa"] == "SI" else cr2
-        col.metric(
-            f"{'✅ Compensa' if row['Compensa'] == 'SI' else '❌ No compensa'}",
-            f"{row['Cantidad']} permisos",
-            f"{pct:.1f}% del total",
-        )
+
+    colores_ratio = {
+        "SI": "#1A7A4A",
+        "NO": "#C0392B",
+    }
+
+    fig4 = go.Figure(go.Pie(
+        labels=ratio["Compensa"],
+        values=ratio["Cantidad"],
+        hole=0.5,
+        marker_colors=[colores_ratio.get(v, "#95A5A6") for v in ratio["Compensa"]],
+        textinfo="label+percent",
+        hovertemplate="%{label}: %{value} permisos (%{percent})<extra></extra>",
+    ))
+    fig4.update_layout(
+        height=260,
+        margin=dict(t=10, b=10, l=10, r=10),
+        showlegend=False,
+    )
+
+    cr1, cr2 = st.columns([1, 2])
+    with cr1:
+        st.plotly_chart(fig4, use_container_width=True)
+    with cr2:
+        for _, row in ratio.iterrows():
+            pct = row["Cantidad"] / total_r * 100
+            icono = "✅" if row["Compensa"] == "SI" else "❌"
+            st.metric(
+                f"{icono} Compensa: {row['Compensa']}",
+                f"{row['Cantidad']} permisos",
+                f"{pct:.1f}% del total",
+            )
 
     st.divider()
     st.caption("Análisis automático basado en los datos de Google Sheets.")
+
