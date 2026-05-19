@@ -594,7 +594,7 @@ elif pagina == "🟢 Panel RRHH":
         reporte["debe"]      = reporte["debe"].apply(lambda x: f"{x:.0f}h")
         reporte["compensado"] = reporte["compensado"].apply(lambda x: f"{x:.0f}h")
         reporte["saldo"]     = saldos["saldo"].apply(lambda x: f"{x:.0f}h")
-        reporte.columns      = ["Apellido y Nombre", "Debe", "Ya compensó", "Saldo pendiente"]
+        reporte.columns      = ["Apellido y Nombre", "Saldo pendiente"]
         reporte.index        = range(1, len(reporte) + 1)
         st.dataframe(reporte, use_container_width=True, height=min(500, 45 + len(reporte) * 35))
         st.caption(f"**{len(reporte)} personas** — **{saldos['saldo'].sum():.0f}h** pendientes en total.")
@@ -937,15 +937,16 @@ elif pagina == "📊 Análisis":
         "Cada hora pendiente es tiempo de producción no recuperado."
     )
 
-    if not permisos_p.empty:
+    if not permisos_planta.empty:
         # Horas comprometidas por mes (solo las que eligen compensar)
-        p_comp = permisos_p[permisos_p["compensa"] == "SI"].copy()
+        # Usamos permisos_planta completo (sin filtro de año) para el histórico total
+        p_comp = permisos_planta[permisos_planta["compensa"] == "SI"].copy()
         p_comp["mes_label"] = p_comp["fecha"].dt.strftime("%Y-%m")
         hs_por_mes = p_comp.groupby("mes_label")["horas_redondeadas"].sum().reset_index()
         hs_por_mes.columns = ["Mes", "Horas comprometidas"]
 
         # Total compensado hasta hoy
-        total_comp = comp_planta["horas_compensadas"].sum() if not comp_planta.empty else 0
+        total_comp = compensaciones[compensaciones["planta"] == KEY_PLANTA]["horas_compensadas"].sum()             if not compensaciones.empty else 0
         total_comprometido = hs_por_mes["Horas comprometidas"].sum()
         pendiente_total = max(0, total_comprometido - total_comp)
 
