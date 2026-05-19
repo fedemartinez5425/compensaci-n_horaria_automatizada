@@ -594,7 +594,7 @@ elif pagina == "🟢 Panel RRHH":
         reporte["debe"]      = reporte["debe"].apply(lambda x: f"{x:.0f}h")
         reporte["compensado"] = reporte["compensado"].apply(lambda x: f"{x:.0f}h")
         reporte["saldo"]     = saldos["saldo"].apply(lambda x: f"{x:.0f}h")
-        reporte.columns      = ["Apellido y Nombre", "Saldo pendiente"]
+        reporte.columns      = ["Apellido y Nombre", "Debe", "Ya compensó", "Saldo pendiente"]
         reporte.index        = range(1, len(reporte) + 1)
         st.dataframe(reporte, use_container_width=True, height=min(500, 45 + len(reporte) * 35))
         st.caption(f"**{len(reporte)} personas** — **{saldos['saldo'].sum():.0f}h** pendientes en total.")
