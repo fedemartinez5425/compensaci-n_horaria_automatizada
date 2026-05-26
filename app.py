@@ -258,21 +258,39 @@ def generar_id(prefijo="P"):
 # ─────────────────────────────────────────────
 # CALCULAR SALDOS
 # ─────────────────────────────────────────────
-def calcular_saldos(permisos_df: pd.DataFrame, comp_df: pd.DataFrame) -> pd.DataFrame:
+def calcular_saldos(
+    permisos_df: pd.DataFrame,
+    comp_df: pd.DataFrame,
+    hasta_fecha=None,
+) -> pd.DataFrame:
+    """
+    Calcula saldo acumulado por persona.
+    Si hasta_fecha (date), filtra permisos y compensaciones hasta esa fecha inclusive.
+    Retorna solo personas con saldo > 0.
+    """
     cols = ["legajo", "nombre", "debe", "compensado", "saldo"]
     if permisos_df.empty:
         return pd.DataFrame(columns=cols)
+
     p = permisos_df[permisos_df["compensa"] == "SI"].copy()
+    c = comp_df.copy() if not comp_df.empty else pd.DataFrame()
+
+    if hasta_fecha is not None:
+        p = p[p["fecha"].dt.date <= hasta_fecha]
+        if not c.empty and "fecha_compensacion" in c.columns:
+            c = c[c["fecha_compensacion"].dt.date <= hasta_fecha]
+
     if p.empty:
         return pd.DataFrame(columns=cols)
+
     debe = (
         p.groupby(["legajo", "nombre"])["horas_redondeadas"]
         .sum().reset_index()
         .rename(columns={"horas_redondeadas": "debe"})
     )
-    if not comp_df.empty:
+    if not c.empty and "horas_compensadas" in c.columns:
         comp = (
-            comp_df.groupby("legajo")["horas_compensadas"]
+            c.groupby("legajo")["horas_compensadas"]
             .sum().reset_index()
             .rename(columns={"horas_compensadas": "compensado"})
         )
@@ -281,7 +299,7 @@ def calcular_saldos(permisos_df: pd.DataFrame, comp_df: pd.DataFrame) -> pd.Data
         saldo = debe.copy()
         saldo["compensado"] = 0.0
     saldo["compensado"] = saldo["compensado"].fillna(0.0)
-    saldo["saldo"] = saldo["debe"] - saldo["compensado"]
+    saldo["saldo"] = (saldo["debe"] - saldo["compensado"]).round(1)
     return saldo[saldo["saldo"] > 0].sort_values("saldo", ascending=False).reset_index(drop=True)
 
 
