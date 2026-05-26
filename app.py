@@ -26,7 +26,7 @@ HORA_FIN_TURNO = time(15, 0)
 
 PASSWORD = "1234"
 
-PLANTAS  = ["Fábrica San Juan", "Casa Central Bs. As."]
+PLANTAS  = ["Fábrica San Juan", "Casa Central Bs. As.", "🏢 Total Empresa"]
 AÑOS     = list(range(2025, 2036))   # 2025 → 2035
 
 # ── Motivos canónicos ──────────────────────────────────────────
@@ -39,7 +39,7 @@ MOTIVOS_LISTA = [
     "Juzgado / Tribunales",
     "Registro Civil / DNI",
     "Escribanía",
-    "Emicar",
+    "Carnet de Conducir",
     "Clínica / Sanatorio",
     "Análisis de sangre",
     "Colegio hijo/a",
@@ -47,8 +47,25 @@ MOTIVOS_LISTA = [
     "Cuidado familiar",
     "Trámite personal",
     "Duelo / Fallecimiento familiar",
+    "ART",
     "Otro",
 ]
+
+# Política San Juan (RR.HH. 020): motivos que PERMITEN compensar
+# Para estos el guardia puede elegir SI o NO.
+# Para los demás se fuerza NO automáticamente.
+MOTIVOS_COMPENSAN_SJ = {
+    "Banco / Cajero",
+    "Análisis de sangre",
+    "Carnet de Conducir",
+    "Registro Civil / DNI",
+    "Obra social / ANSES",
+    "Juzgado / Tribunales",
+    "Escribanía",
+    "Trámite personal",
+    "Colegio hijo/a",
+    "Otro",  # queda a criterio
+}
 
 # Mapeo para normalizar motivos históricos escritos a mano
 MOTIVO_MAP = {
@@ -75,10 +92,10 @@ MOTIVO_MAP = {
     "declarar estafa":           "Juzgado / Tribunales",
     "registro civil":            "Registro Civil / DNI",
     "dni":                       "Registro Civil / DNI",
-    "carnet de conducir":        "Registro Civil / DNI",
+    "carnet de conducir":        "Carnet de Conducir",
     "escribania":                "Escribanía",
     "escribanía":                "Escribanía",
-    "emicar":                    "Emicar",
+    "emicar":                    "Carnet de Conducir",
     "sanatorio sj":              "Clínica / Sanatorio",
     "clinica":                   "Clínica / Sanatorio",
     "clínica":                   "Clínica / Sanatorio",
@@ -309,15 +326,25 @@ with st.sidebar:
         st.rerun()
 
 # Filtrar datos por planta seleccionada
-KEY_PLANTA = "Fábrica" if "San Juan" in planta_activa else "Casa Central"
+KEY_PLANTA = "Fábrica" if "San Juan" in planta_activa else ("Casa Central" if "Bs." in planta_activa else "Total")
+ES_TOTAL   = KEY_PLANTA == "Total"
+ES_SJ      = KEY_PLANTA == "Fábrica"
 
-padron_planta = padron[padron["planta"] == KEY_PLANTA].copy() if not padron.empty else padron
-permisos_planta = permisos[permisos["planta"] == KEY_PLANTA].copy() if not permisos.empty else permisos
-comp_planta = compensaciones[compensaciones["planta"] == KEY_PLANTA].copy() if not compensaciones.empty else compensaciones
+padron_planta   = padron.copy() if ES_TOTAL else (padron[padron["planta"] == KEY_PLANTA].copy() if not padron.empty else padron)
+permisos_planta = permisos.copy() if ES_TOTAL else (permisos[permisos["planta"] == KEY_PLANTA].copy() if not permisos.empty else permisos)
+comp_planta     = compensaciones.copy() if ES_TOTAL else (compensaciones[compensaciones["planta"] == KEY_PLANTA].copy() if not compensaciones.empty else compensaciones)
 
 padron_dict     = dict(zip(padron_planta["legajo"], padron_planta["nombre"])) if not padron_planta.empty else {}
 nombre_a_legajo = dict(zip(padron_planta["nombre"], padron_planta["legajo"])) if not padron_planta.empty else {}
 nombres_lista   = sorted(padron_planta["nombre"].tolist()) if not padron_planta.empty else []
+
+# Solo empleados activos para reportes de saldo y selectboxes del guardia
+padron_activos  = padron_planta[padron_planta["activo"].astype(str).str.upper() == "SI"] if not padron_planta.empty else padron_planta
+legajos_activos = set(padron_activos["legajo"].tolist())
+nombres_lista   = sorted(padron_activos["nombre"].tolist()) if not padron_activos.empty else []
+# Para saldos solo contamos permisos/compensaciones de activos
+permisos_activos = permisos_planta[permisos_planta["legajo"].isin(legajos_activos)] if not permisos_planta.empty else permisos_planta
+comp_activos     = comp_planta[comp_planta["legajo"].isin(legajos_activos)] if not comp_planta.empty else comp_planta
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -380,6 +407,30 @@ if pagina == "🔵 Panel Guardia":
     with col_sr2:
         sin_retorno_pre = st.checkbox("🔴 Sin retorno (no volvió)", value=False, key="sr_pre")
 
+    # Política SJ: determinar si el motivo permite compensar
+    if ES_SJ:
+        puede_compensar = motivo_sel in MOTIVOS_COMPENSAN_SJ
+        if not puede_compensar:
+            st.info(
+                f"ℹ️ El motivo **{motivo_sel}** no está contemplado en la política de compensación "
+                "de San Juan — se registrará como **No compensa** automáticamente."
+            )
+    else:
+        puede_compensar = True  # BsAs: todos pueden (política pendiente)
+
+    # Radio compensa — FUERA del form para reactividad con el motivo
+    if puede_compensar:
+        compensa_pre = st.radio(
+            "💰 ¿Va a compensar las horas?",
+            ["SI", "NO"],
+            horizontal=True,
+            key="compensa_pre",
+            help="SI = se queda horas extra otro día. NO = no se descuenta.",
+        )
+    else:
+        compensa_pre = "NO"
+        st.write("💰 **No compensa** (automático por política)")
+
     # Si S/R → hora entrada automática 15:00 y deshabilitada
     valor_entrada = HORA_FIN_TURNO if sin_retorno_pre else time(9, 0)
 
@@ -390,19 +441,12 @@ if pagina == "🔵 Panel Guardia":
         # Leer valores del pre-form
         hora_salida  = hora_salida_pre
         sin_retorno  = sin_retorno_pre
+        compensa     = compensa_pre
         hora_entrada = st.time_input(
             "🏁 Hora de entrada" + (" (automático — Sin retorno: 15:00)" if sin_retorno else ""),
             value=valor_entrada,
             step=60,
             disabled=sin_retorno,
-        )
-
-
-        compensa = st.radio(
-            "💰 ¿Va a compensar las horas? *",
-            ["SI", "NO"],
-            horizontal=True,
-            help="SI = se queda horas extra otro día. NO = no se descuenta.",
         )
         registrado_por = st.text_input("👮 Tu nombre *", placeholder="Ej: García Juan")
 
@@ -509,13 +553,18 @@ if pagina == "🔵 Panel Guardia":
         with st.form("form_nuevo"):
             cn1, cn2 = st.columns(2)
             with cn1:
-                nvo_leg = st.text_input("Legajo (opcional)", placeholder="Ej: 3050")
+                nvo_leg = st.text_input("Legajo *", placeholder="Ej: 3050")
             with cn2:
                 nvo_nom = st.text_input("Apellido y Nombre *", placeholder="Ej: GOMEZ, CARLOS ALBERTO")
             nvo_sec = st.text_input("Sector (opcional)")
+            _planta_opts = ["Fábrica", "Casa Central"]
+            _planta_def = 0 if ES_SJ else (1 if not ES_TOTAL else 0)
+            nvo_planta = st.selectbox("Planta *", _planta_opts, index=_planta_def)
             if st.form_submit_button("Agregar al padrón", use_container_width=True):
                 nom_clean = nvo_nom.strip().upper()
                 err = []
+                if not nvo_leg.strip():
+                    err.append("El legajo es obligatorio.")
                 if not nom_clean:
                     err.append("El nombre es obligatorio.")
                 if nom_clean in nombre_a_legajo:
@@ -525,7 +574,7 @@ if pagina == "🔵 Panel Guardia":
                         st.error(f"❌ {e}")
                 else:
                     try:
-                        agregar_empleado(gc, nvo_leg.strip(), nom_clean, nvo_sec.strip(), KEY_PLANTA)
+                        agregar_empleado(gc, nvo_leg.strip(), nom_clean, nvo_sec.strip(), nvo_planta)
                         st.success(f"✅ {nom_clean} agregado. Recargá la página.")
                     except Exception as e:
                         st.error(f"❌ Error: {e}")
@@ -540,6 +589,61 @@ elif pagina == "🟢 Panel RRHH":
     st.write("Seguimiento de permisos y compensaciones.")
     st.divider()
 
+    # ── Gestión de empleados (inactivos / baja) ──────────────────
+    with st.expander("👤 Gestionar empleados — marcar inactivo o dar de baja"):
+        st.caption(
+            "Marcá como **Inactivo** a quien se fue de la empresa: sus horas pendientes "
+            "desaparecen del reporte pero quedan en el historial. "
+            "**Dar de baja** elimina el empleado del padrón definitivamente."
+        )
+        if not padron_planta.empty:
+            emp_opciones = ["— Seleccioná —"] + sorted(padron_planta["nombre"].tolist())
+            emp_sel_g = st.selectbox("Empleado/a", emp_opciones, key="emp_gestion")
+            if emp_sel_g and emp_sel_g != "— Seleccioná —":
+                leg_emp_g = nombre_a_legajo.get(emp_sel_g, "")
+                activo_vals = padron_planta[padron_planta["nombre"] == emp_sel_g]["activo"].values
+                activo_actual = str(activo_vals[0]).upper() if len(activo_vals) > 0 else "SI"
+                st.write(f"Estado actual: **{'✅ Activo' if activo_actual == 'SI' else '⛔ Inactivo'}**")
+                col_g1, col_g2 = st.columns(2)
+                with col_g1:
+                    if activo_actual == "SI":
+                        if st.button("⛔ Marcar como Inactivo", use_container_width=True, key="btn_inactivo"):
+                            try:
+                                ws_p = get_wb(gc).worksheet("padron")
+                                for c in ws_p.findall(emp_sel_g):
+                                    ws_p.update_cell(c.row, 5, "NO")
+                                leer_padron.clear()
+                                st.success(f"⛔ {emp_sel_g} marcado como inactivo.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+                    else:
+                        if st.button("✅ Reactivar", use_container_width=True, key="btn_reactivar"):
+                            try:
+                                ws_p = get_wb(gc).worksheet("padron")
+                                for c in ws_p.findall(emp_sel_g):
+                                    ws_p.update_cell(c.row, 5, "SI")
+                                leer_padron.clear()
+                                st.success(f"✅ {emp_sel_g} reactivado.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+                with col_g2:
+                    if st.button("🗑️ Dar de baja del padrón", use_container_width=True, key="btn_baja",
+                                 type="primary"):
+                        try:
+                            ws_p = get_wb(gc).worksheet("padron")
+                            for c in sorted(ws_p.findall(emp_sel_g), key=lambda x: x.row, reverse=True):
+                                ws_p.delete_rows(c.row)
+                            leer_padron.clear()
+                            st.success(f"🗑️ {emp_sel_g} eliminado del padrón.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ {e}")
+        else:
+            st.info("No hay empleados para esta planta.")
+
+    st.divider()
     col_f1, col_f2, col_f3 = st.columns([1, 1, 2])
     with col_f1:
         año_sel = st.selectbox("Año", AÑOS, index=AÑOS.index(min(date.today().year, max(AÑOS))))
@@ -569,7 +673,11 @@ elif pagina == "🟢 Panel RRHH":
         p_f = permisos_planta.copy()
         c_f = comp_planta.copy()
 
-    saldos = calcular_saldos(p_f, c_f)
+    import calendar as _cal
+    _ultimo_dia = date(año_sel, mes_sel, _cal.monthrange(año_sel, mes_sel)[1])
+    saldos_al_cierre = calcular_saldos(permisos_activos, comp_activos, hasta_fecha=_ultimo_dia)
+    saldos_actuales  = calcular_saldos(permisos_activos, comp_activos)
+    saldos           = saldos_actuales  # alias para métricas
     comp_total = c_f["horas_compensadas"].sum() if not c_f.empty and "horas_compensadas" in c_f.columns else 0
 
     # Métricas
@@ -586,18 +694,30 @@ elif pagina == "🟢 Panel RRHH":
         "Quiénes deben compensar horas y cuántas. "
         "Sacá captura y enviá a gerencia de planta."
     )
-
-    if saldos.empty:
-        st.success(f"✅ Ningún empleado tiene horas pendientes en {MESES[mes_sel]} {año_sel}.")
+    if saldos_al_cierre.empty:
+        st.success(f"✅ Ningún empleado tiene horas pendientes al cierre de {MESES[mes_sel]} {año_sel}.")
     else:
-        reporte = saldos[["nombre", "debe", "compensado", "saldo"]].copy()
-        reporte["debe"]      = reporte["debe"].apply(lambda x: f"{x:.0f}h")
-        reporte["compensado"] = reporte["compensado"].apply(lambda x: f"{x:.0f}h")
-        reporte["saldo"]     = saldos["saldo"].apply(lambda x: f"{x:.0f}h")
-        reporte.columns      = ["Apellido y Nombre", "Debe", "Ya compensó", "Saldo pendiente"]
-        reporte.index        = range(1, len(reporte) + 1)
-        st.dataframe(reporte, use_container_width=True, height=min(500, 45 + len(reporte) * 35))
-        st.caption(f"**{len(reporte)} personas** — **{saldos['saldo'].sum():.0f}h** pendientes en total.")
+        reporte = saldos_al_cierre[["nombre", "saldo"]].copy()
+        reporte["saldo"] = saldos_al_cierre["saldo"].apply(lambda x: f"{x:.0f}h")
+        reporte.columns = ["Apellido y Nombre", "Horas pendientes"]
+        reporte.index   = range(1, len(reporte) + 1)
+        st.dataframe(reporte, use_container_width=True, height=min(480, 45 + len(reporte) * 35))
+        st.caption(f"**{len(reporte)} personas** — **{saldos_al_cierre['saldo'].sum():.0f}h** pendientes al cierre de {MESES[mes_sel]}.")
+
+    # ── Saldo actual (a hoy) ────────────────────────────────────
+    st.divider()
+    st.subheader("📊 Saldo acumulado actual (a hoy)")
+    st.caption("Incluye todas las compensaciones registradas, incluso de meses futuros.")
+    if saldos_actuales.empty:
+        st.success("✅ Nadie tiene horas pendientes a la fecha.")
+    else:
+        sa = saldos_actuales[["nombre","debe","compensado","saldo"]].copy()
+        sa["debe"] = sa["debe"].apply(lambda x: f"{x:.0f}h")
+        sa["compensado"] = sa["compensado"].apply(lambda x: f"{x:.0f}h")
+        sa["saldo"] = saldos_actuales["saldo"].apply(lambda x: f"{x:.0f}h")
+        sa.columns = ["Nombre","Debe total","Ya compensó","Saldo hoy"]
+        sa.index = range(1, len(sa)+1)
+        st.dataframe(sa, use_container_width=True, height=min(380, 45+len(sa)*35))
 
     # ── Registrar compensación ──
     st.divider()
@@ -613,7 +733,7 @@ elif pagina == "🟢 Panel RRHH":
         leg_c = nombre_a_legajo.get(nom_c, "") if nom_c else ""
 
         if nom_c and not saldos.empty:
-            saldo_actual = saldos[saldos["nombre"] == nom_c]["saldo"].sum()
+            saldo_actual = saldos_actuales[saldos_actuales["nombre"] == nom_c]["saldo"].sum() if not saldos_actuales.empty else 0
             if saldo_actual > 0:
                 st.info(f"Saldo pendiente de **{nom_c}**: **{saldo_actual:.0f}h**")
             else:
