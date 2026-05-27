@@ -67,6 +67,24 @@ MOTIVOS_COMPENSAN_SJ = {
     "Otro",  # queda a criterio
 }
 
+# Política Buenos Aires (RR.HH. 036 — convenio): motivos que PERMITEN compensar
+# Contemplados: análisis/estudios médicos (propios e hijos), trámites bancarios,
+# trámites en registros/dependencias públicas, reuniones/actos escolares de hijos.
+# Máximo 10hs anuales, hasta 4hs por permiso (control operativo, no en la app).
+MOTIVOS_COMPENSAN_BSAS = {
+    "Banco / Cajero",
+    "Análisis de sangre",
+    "Médico propio",        # estudios médicos propios
+    "Familiar enfermo",     # estudios médicos hijos
+    "Registro Civil / DNI", # trámites en dependencias públicas
+    "Obra social / ANSES",  # trámites en dependencias públicas
+    "Juzgado / Tribunales", # trámites en dependencias públicas
+    "Escribanía",           # trámites en dependencias públicas
+    "Escuela hijo/a",       # reuniones/actos escolares
+    "Colegio hijo/a",       # reuniones/actos escolares
+    "Otro",                 # queda a criterio
+}
+
 # Mapeo para normalizar motivos históricos escritos a mano
 MOTIVO_MAP = {
     "bco":                       "Banco / Cajero",
@@ -433,8 +451,16 @@ if pagina == "🔵 Panel Guardia":
                 f"ℹ️ El motivo **{motivo_sel}** no está contemplado en la política de compensación "
                 "de San Juan — se registrará como **No compensa** automáticamente."
             )
+    elif KEY_PLANTA == "Casa Central":
+        puede_compensar = motivo_sel in MOTIVOS_COMPENSAN_BSAS
+        if not puede_compensar:
+            st.info(
+                f"ℹ️ El motivo **{motivo_sel}** no está contemplado en la política de "
+                "compensación de Bs. As. (RR.HH. 036) — se registrará como **No compensa** automáticamente."
+            )
     else:
-        puede_compensar = True  # BsAs: todos pueden (política pendiente)
+        # Total Empresa: sin política definida globalmente, queda a criterio
+        puede_compensar = True
 
     # Radio compensa — FUERA del form para reactividad con el motivo
     if puede_compensar:
