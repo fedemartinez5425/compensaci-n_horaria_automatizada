@@ -218,6 +218,15 @@ def leer_padron(_gc):
         df["legajo"] = df["legajo"].astype(str).str.strip()
         df["nombre"] = df["nombre"].astype(str).str.strip().str.upper()
         df["planta"] = df["planta"].astype(str).str.strip()
+        # sector y clasificacion pueden no existir si aún no se corrió el script
+        if "sector" not in df.columns:
+            df["sector"] = ""
+        else:
+            df["sector"] = df["sector"].astype(str).str.strip()
+        if "clasificacion" not in df.columns:
+            df["clasificacion"] = ""
+        else:
+            df["clasificacion"] = df["clasificacion"].astype(str).str.strip()
     return df
 
 
@@ -381,6 +390,9 @@ nombres_lista   = sorted(padron_activos["nombre"].tolist()) if not padron_activo
 # Para saldos solo contamos permisos/compensaciones de activos
 permisos_activos = permisos_planta[permisos_planta["legajo"].isin(legajos_activos)] if not permisos_planta.empty else permisos_planta
 comp_activos     = comp_planta[comp_planta["legajo"].isin(legajos_activos)] if not comp_planta.empty else comp_planta
+# Dicts para enriquecer reportes con sector y clasificación
+sector_dict  = dict(zip(padron_activos["legajo"], padron_activos["sector"])) if not padron_activos.empty else {}
+clasif_dict  = dict(zip(padron_activos["legajo"], padron_activos["clasificacion"])) if not padron_activos.empty else {}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -741,12 +753,86 @@ elif pagina == "🟢 Panel RRHH":
     if saldos_al_cierre.empty:
         st.success(f"✅ Ningún empleado tiene horas pendientes al cierre de {MESES[mes_sel]} {año_sel}.")
     else:
-        reporte = saldos_al_cierre[["nombre", "saldo"]].copy()
-        reporte["saldo"] = saldos_al_cierre["saldo"].apply(lambda x: f"{x:.0f}h")
-        reporte.columns = ["Apellido y Nombre", "Horas pendientes"]
-        reporte.index   = range(1, len(reporte) + 1)
-        st.dataframe(reporte, use_container_width=True, height=min(480, 45 + len(reporte) * 35))
-        st.caption(f"**{len(reporte)} personas** — **{saldos_al_cierre['saldo'].sum():.0f}h** pendientes al cierre de {MESES[mes_sel]}.")
+        # Enriquecer saldos con sector y clasificación
+        rep = saldos_al_cierre.copy()
+        rep["sector"]        = rep["legajo"].map(sector_dict).fillna("Sin sector")
+        rep["clasificacion"] = rep["legajo"].map(clasif_dict).fillna("Sin clasificar")
+        rep = rep.sort_values(["sector", "clasificacion", "saldo"], ascending=[True, True, False])
+
+        # Colores por clasificación
+        CLASIF_COLOR = {
+            "HOURLY DIRECT":   "#EBF5FB",   # azul claro
+            "HOURLY INDIRECT": "#EAF4F4",   # verde agua
+            "EXEMPT":          "#FEF9E7",   # amarillo claro
+            "NON EXEMPT":      "#FDEDEC",   # rojo claro
+        }
+
+        # Tabla HTML con agrupación por sector
+        sector_actual = None
+        html_rows = []
+        for _, row in rep.iterrows():
+            if row["sector"] != sector_actual:
+                sector_actual = row["sector"]
+                html_rows.append(
+                    f'<tr style="background:#1B4F9B;color:white;font-weight:700;">'
+                    f'<td colspan="3" style="padding:6px 10px;">📁 {sector_actual}</td></tr>'
+                )
+            bg = CLASIF_COLOR.get(row["clasificacion"], "#F8F9FA")
+            html_rows.append(
+                f'<tr style="background:{bg};">'
+                f'<td style="padding:5px 10px;">{row["nombre"]}</td>'
+                f'<td style="padding:5px 10px;color:#555;font-size:0.85rem;">{row["clasificacion"]}</td>'
+                f'<td style="padding:5px 10px;font-weight:700;color:#C0392B;text-align:center;">'
+                f'{row["saldo"]:.0f}h</td>'
+                f'</tr>'
+            )
+
+        tabla_html = f"""
+        <style>
+            .rep-table {{width:100%;border-collapse:collapse;font-size:0.9rem;font-family:sans-serif;}}
+            .rep-table th {{background:#1B4F9B;color:white;padding:8px 10px;text-align:left;}}
+            .rep-table tr:hover td {{filter:brightness(0.96);}}
+        </style>
+        <table class="rep-table">
+          <thead><tr>
+            <th>Apellido y Nombre</th>
+            <th>Clasificación</th>
+            <th style="text-align:center;">Hs. pendientes</th>
+          </tr></thead>
+          <tbody>{"".join(html_rows)}</tbody>
+        </table>
+        """
+        st.markdown(tabla_html, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Leyenda de colores
+        col_l1, col_l2, col_l3, col_l4 = st.columns(4)
+        for col, (clasif, color) in zip(
+            [col_l1, col_l2, col_l3, col_l4],
+            CLASIF_COLOR.items()
+        ):
+            col.markdown(
+                f'<div style="background:{color};border-radius:4px;padding:4px 8px;'
+                f'font-size:0.78rem;text-align:center;border:1px solid #ddd;">{clasif}</div>',
+                unsafe_allow_html=True
+            )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        total_hs = rep["saldo"].sum()
+        st.caption(
+            f"**{len(rep)} personas** — **{total_hs:.0f}h** pendientes al cierre de {MESES[mes_sel]}. "
+            f"Ordenado por sector → clasificación → horas."
+        )
+
+        # Botón de descarga CSV
+        csv_data = rep[["nombre","sector","clasificacion","saldo"]].copy()
+        csv_data.columns = ["Nombre","Sector","Clasificacion","Horas_pendientes"]
+        st.download_button(
+            "⬇️ Descargar reporte CSV",
+            csv_data.to_csv(index=False, encoding="utf-8-sig"),
+            file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.csv",
+            mime="text/csv",
+        )
 
     # ── Saldo actual (a hoy) ────────────────────────────────────
     st.divider()
