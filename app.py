@@ -10,7 +10,7 @@ from datetime import datetime, date, time
 # CONFIG
 # ─────────────────────────────────────────────
 st.set_page_config(
-    page_title="Control de Permisos",
+    page_title="GILDAN — Control de Permisos",
     page_icon="🏭",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -148,7 +148,8 @@ def check_login():
     if "autenticado" not in st.session_state:
         st.session_state.autenticado = False
     if not st.session_state.autenticado:
-        st.title("🏭 Control de Permisos")
+        st.markdown("# 🧵 GILDAN")
+        st.title("Control de Permisos — Recursos Humanos")
         st.divider()
         st.write("Ingresá la contraseña para acceder.")
         clave = st.text_input("Contraseña", type="password", placeholder="••••")
@@ -270,9 +271,10 @@ def guardar_compensacion(gc, fila: dict):
     leer_compensaciones.clear()
 
 
-def agregar_empleado(gc, legajo: str, nombre: str, sector: str, planta: str):
+def agregar_empleado(gc, legajo: str, nombre: str, sector: str, planta: str, clasificacion: str = ""):
+    # Schema padron: legajo, nombre, sector, centro_costo, planta, activo, clasificacion
     get_wb(gc).worksheet("padron").append_row(
-        [legajo.strip(), nombre.upper().strip(), sector.strip(), planta, "SI"],
+        [legajo.strip(), nombre.upper().strip(), sector.strip(), "", planta, "SI", clasificacion.strip()],
         value_input_option="RAW"
     )
     leer_padron.clear()
@@ -353,7 +355,8 @@ except Exception as e:
 # SIDEBAR — selección de planta + navegación
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 🏭 Control de Permisos")
+    st.markdown("## 🧵 GILDAN")
+    st.markdown("### Control de Permisos")
     st.caption(f"Hoy: {date.today().strftime('%d/%m/%Y')}")
     st.divider()
 
@@ -606,13 +609,28 @@ if pagina == "🔵 Panel Guardia":
             "Usá esto solo si la persona no aparece en el listado. "
             "El nombre debe ser completo — no puede haber dos personas con el mismo nombre."
         )
+        # Listas para los dropdowns — desde el padrón existente
+        _sectores_raw = sorted(padron["sector"].dropna().unique().tolist()) if not padron.empty else []
+        _sectores     = [s for s in _sectores_raw if s and s not in ("", "nan")]
+        _clasifs_raw  = sorted(padron["clasificacion"].dropna().unique().tolist()) if not padron.empty else []
+        _clasifs      = [c for c in _clasifs_raw if c and c not in ("", "nan")]
+        if not _sectores:
+            _sectores = ["COSTURA SAN JUAN", "CALIDAD", "ABASTECIMIENTO", "MANTENIMIENTO",
+                         "PLANEAMIENTO", "ADMINISTRACIÓN", "OTRO"]
+        if not _clasifs:
+            _clasifs = ["HOURLY DIRECT", "HOURLY INDIRECT", "EXEMPT", "NON EXEMPT"]
+
         with st.form("form_nuevo"):
             cn1, cn2 = st.columns(2)
             with cn1:
                 nvo_leg = st.text_input("Legajo *", placeholder="Ej: 3050")
             with cn2:
                 nvo_nom = st.text_input("Apellido y Nombre *", placeholder="Ej: GOMEZ, CARLOS ALBERTO")
-            nvo_sec = st.text_input("Sector (opcional)")
+            na1, na2 = st.columns(2)
+            with na1:
+                nvo_sec = st.selectbox("Sector *", _sectores)
+            with na2:
+                nvo_cla = st.selectbox("Clasificación *", _clasifs)
             _planta_opts = ["Fábrica", "Casa Central"]
             _planta_def = 0 if ES_SJ else (1 if not ES_TOTAL else 0)
             nvo_planta = st.selectbox("Planta *", _planta_opts, index=_planta_def)
@@ -630,7 +648,8 @@ if pagina == "🔵 Panel Guardia":
                         st.error(f"❌ {e}")
                 else:
                     try:
-                        agregar_empleado(gc, nvo_leg.strip(), nom_clean, nvo_sec.strip(), nvo_planta)
+                        agregar_empleado(gc, nvo_leg.strip(), nom_clean, nvo_sec,
+                                         nvo_planta, nvo_cla)
                         st.success(f"✅ {nom_clean} agregado. Recargá la página.")
                     except Exception as e:
                         st.error(f"❌ Error: {e}")
@@ -641,7 +660,9 @@ if pagina == "🔵 Panel Guardia":
 # ═══════════════════════════════════════════════════════════════
 elif pagina == "🟢 Panel RRHH":
 
-    st.title("🟢 Hola, RRHH — San Juan" if "San Juan" in planta_activa else "🟢 Hola, RRHH — Bs. As.")
+    _rrhh_titulo = ("🟢 RRHH — San Juan" if "San Juan" in planta_activa
+                   else ("🟢 RRHH — Bs. As." if "Bs." in planta_activa else "🟢 RRHH — Total Empresa"))
+    st.title(_rrhh_titulo)
     st.write("Seguimiento de permisos y compensaciones.")
     st.divider()
 
@@ -717,17 +738,17 @@ elif pagina == "🟢 Panel RRHH":
         st.stop()
 
     if modo == "Solo este mes":
-        p_f = permisos_planta[
-            (permisos_planta["fecha"].dt.year == año_sel) &
-            (permisos_planta["fecha"].dt.month == mes_sel)
+        p_f = permisos_activos[
+            (permisos_activos["fecha"].dt.year == año_sel) &
+            (permisos_activos["fecha"].dt.month == mes_sel)
         ].copy()
-        c_f = comp_planta[
-            (comp_planta["fecha_compensacion"].dt.year == año_sel) &
-            (comp_planta["fecha_compensacion"].dt.month == mes_sel)
-        ].copy() if not comp_planta.empty else comp_planta.copy()
+        c_f = comp_activos[
+            (comp_activos["fecha_compensacion"].dt.year == año_sel) &
+            (comp_activos["fecha_compensacion"].dt.month == mes_sel)
+        ].copy() if not comp_activos.empty else comp_activos.copy()
     else:
-        p_f = permisos_planta.copy()
-        c_f = comp_planta.copy()
+        p_f = permisos_activos.copy()
+        c_f = comp_activos.copy()
 
     import calendar as _cal
     _ultimo_dia = date(año_sel, mes_sel, _cal.monthrange(año_sel, mes_sel)[1])
@@ -736,12 +757,13 @@ elif pagina == "🟢 Panel RRHH":
     saldos           = saldos_actuales  # alias para métricas
     comp_total = c_f["horas_compensadas"].sum() if not c_f.empty and "horas_compensadas" in c_f.columns else 0
 
-    # Métricas
+    # Métricas — p_f y c_f ya están filtrados por modo (mes o total)
+    _label_periodo = f"{MESES[mes_sel]} {año_sel}" if modo == "Solo este mes" else "Total acumulado"
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-    col_m1.metric("📋 Permisos registrados", len(p_f))
-    col_m2.metric("👥 Personas con deuda", len(saldos))
-    col_m3.metric("⏳ Horas pendientes", f"{saldos['saldo'].sum():.0f}h" if not saldos.empty else "0h")
-    col_m4.metric("✅ Horas compensadas", f"{comp_total:.0f}h")
+    col_m1.metric(f"📋 Permisos ({_label_periodo})", len(p_f))
+    col_m2.metric("👥 Personas con saldo > 0", len(saldos_al_cierre))
+    col_m3.metric("⏳ Horas pendientes (hoy)", f"{saldos_actuales['saldo'].sum():.0f}h" if not saldos_actuales.empty else "0h")
+    col_m4.metric(f"✅ Hs. compensadas ({_label_periodo})", f"{comp_total:.0f}h")
 
     # ── Reporte para gerencia ──
     st.divider()
@@ -824,15 +846,80 @@ elif pagina == "🟢 Panel RRHH":
             f"Ordenado por sector → clasificación → horas."
         )
 
-        # Botón de descarga CSV
-        csv_data = rep[["nombre","sector","clasificacion","saldo"]].copy()
-        csv_data.columns = ["Nombre","Sector","Clasificacion","Horas_pendientes"]
-        st.download_button(
-            "⬇️ Descargar reporte CSV",
-            csv_data.to_csv(index=False, encoding="utf-8-sig"),
-            file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.csv",
-            mime="text/csv",
+        # Botón de descarga PNG — renderiza la tabla como imagen
+        import io
+        _png_rep = rep[["nombre","sector","clasificacion","saldo"]].copy()
+        _png_rep["saldo"] = _png_rep["saldo"].apply(lambda x: f"{x:.0f}h")
+        _png_rep.columns  = ["Apellido y Nombre", "Sector", "Clasificación", "Hs. pendientes"]
+
+        _CLASIF_TEXT = {
+            "HOURLY DIRECT":   "#1B4F9B",
+            "HOURLY INDIRECT": "#1A7A4A",
+            "EXEMPT":          "#7D6608",
+            "NON EXEMPT":      "#922B21",
+        }
+        _fill_colors = []
+        _font_colors = []
+        for col_name in _png_rep.columns:
+            if col_name == "Clasificación":
+                _fill_colors.append(
+                    [CLASIF_COLOR.get(v, "#F8F9FA") for v in _png_rep["Clasificación"]]
+                )
+                _font_colors.append(
+                    [_CLASIF_TEXT.get(v, "#333") for v in _png_rep["Clasificación"]]
+                )
+            elif col_name == "Hs. pendientes":
+                _fill_colors.append(["#FDEDEC"] * len(_png_rep))
+                _font_colors.append(["#C0392B"] * len(_png_rep))
+            else:
+                _fill_colors.append(["white"] * len(_png_rep))
+                _font_colors.append(["#222"] * len(_png_rep))
+
+        _fig_png = go.Figure(go.Table(
+            header=dict(
+                values=list(_png_rep.columns),
+                fill_color="#1B4F9B",
+                font=dict(color="white", size=12, family="Arial"),
+                align="left",
+                height=32,
+            ),
+            cells=dict(
+                values=[_png_rep[c] for c in _png_rep.columns],
+                fill_color=_fill_colors,
+                font=dict(color=_font_colors, size=11, family="Arial"),
+                align="left",
+                height=28,
+            ),
+        ))
+        _fig_png.update_layout(
+            title=dict(
+                text=f"GILDAN — Reporte de Compensación Horaria<br>"
+                     f"<sup>{MESES[mes_sel]} {año_sel} | {planta_activa}</sup>",
+                font=dict(size=14, color="#1B4F9B"),
+                x=0,
+            ),
+            margin=dict(t=70, b=20, l=10, r=10),
+            height=max(200, 60 + len(_png_rep) * 28),
+            width=800,
         )
+        try:
+            _img_bytes = _fig_png.to_image(format="png", scale=2)
+            st.download_button(
+                "⬇️ Descargar reporte PNG",
+                data=_img_bytes,
+                file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.png",
+                mime="image/png",
+            )
+        except Exception as _png_err:
+            # Fallback a CSV si kaleido no está disponible en el entorno
+            _csv_fb = rep[["nombre","sector","clasificacion","saldo"]].copy()
+            _csv_fb.columns = ["Nombre","Sector","Clasificacion","Horas_pendientes"]
+            st.download_button(
+                "⬇️ Descargar reporte CSV (instalar kaleido para PNG)",
+                _csv_fb.to_csv(index=False, encoding="utf-8-sig"),
+                file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.csv",
+                mime="text/csv",
+            )
 
     # ── Saldo actual (a hoy) ────────────────────────────────────
     st.divider()
@@ -1179,7 +1266,105 @@ elif pagina == "📊 Análisis":
     st.divider()
     st.caption("Análisis automático basado en los datos de Google Sheets.")
 
-    # ── 5. (OPCIONAL) Tiempo no productivo acumulado por mes ──
+    # ── 5. Horas no trabajadas MOD por día ──────────────────────
+    st.divider()
+    st.subheader("🔧 Horas no trabajadas — Mano de Obra Directa (MOD)")
+    st.caption(
+        "Permisos de empleados **HOURLY DIRECT** del sector **COSTURA**. "
+        "Métrica clave de calidad de producción — calculada automáticamente."
+    )
+
+    # Filtros de período para este análisis
+    _mod_col1, _mod_col2 = st.columns(2)
+    with _mod_col1:
+        _mod_año = st.selectbox("Año", AÑOS,
+                                index=AÑOS.index(min(date.today().year, max(AÑOS))),
+                                key="mod_año")
+    with _mod_col2:
+        _mod_mes = st.selectbox("Mes", list(MESES.keys()),
+                                index=date.today().month - 1,
+                                format_func=lambda x: MESES[x],
+                                key="mod_mes")
+
+    # Cruzar permisos con padrón para obtener clasificacion y sector
+    _df_mod = permisos_planta.copy()
+    _df_mod["sector_emp"]  = _df_mod["legajo"].map(sector_dict).fillna("")
+    _df_mod["clasif_emp"]  = _df_mod["legajo"].map(clasif_dict).fillna("")
+
+    # Filtrar: solo MOD = HOURLY DIRECT + sector que contenga "COSTURA"
+    _df_mod = _df_mod[
+        (_df_mod["clasif_emp"].str.upper() == "HOURLY DIRECT") &
+        (_df_mod["sector_emp"].str.upper().str.contains("COSTURA", na=False))
+    ].copy()
+
+    # Filtrar por período seleccionado
+    _df_mod = _df_mod[
+        (_df_mod["fecha"].dt.year == _mod_año) &
+        (_df_mod["fecha"].dt.month == _mod_mes)
+    ].copy()
+
+    if _df_mod.empty:
+        st.info(f"No hay permisos de MOD registrados en {MESES[_mod_mes]} {_mod_año}.")
+    else:
+        # Agrupar por fecha: total horas no trabajadas y personas afectadas
+        _df_mod["fecha_str"] = _df_mod["fecha"].dt.strftime("%d/%m/%Y")
+        _resumen_dia = (
+            _df_mod.groupby("fecha_str")
+            .agg(
+                total_horas=("minutos_reales", lambda x: round(x.sum() / 60, 2)),
+                personas=("nombre", "nunique"),
+                nombres=("nombre", lambda x: ", ".join(sorted(x.unique())))
+            )
+            .reset_index()
+            .rename(columns={
+                "fecha_str": "Fecha",
+                "total_horas": "Hs. no trabajadas",
+                "personas": "Personas",
+                "nombres": "Empleados"
+            })
+            .sort_values("Fecha")
+        )
+
+        # Métricas del período
+        _tm1, _tm2, _tm3 = st.columns(3)
+        _tm1.metric("Total hs. no trabajadas (MOD)", f"{_resumen_dia['Hs. no trabajadas'].sum():.1f}h")
+        _tm2.metric("Días con ausentismo MOD", len(_resumen_dia))
+        _tm3.metric("Personas MOD afectadas", _df_mod["nombre"].nunique())
+
+        # Tabla diaria
+        st.dataframe(
+            _resumen_dia,
+            use_container_width=True,
+            hide_index=True,
+            height=min(420, 45 + len(_resumen_dia) * 35),
+        )
+
+        # Gráfico de barras diario
+        _max_mod = _resumen_dia["Hs. no trabajadas"].max()
+        _cols_mod = ["#C0392B" if v == _max_mod else "#E67E22"
+                     for v in _resumen_dia["Hs. no trabajadas"]]
+        _fig_mod = go.Figure(go.Bar(
+            x=_resumen_dia["Fecha"],
+            y=_resumen_dia["Hs. no trabajadas"],
+            text=_resumen_dia["Hs. no trabajadas"].apply(lambda x: f"{x:.1f}h"),
+            textposition="outside",
+            marker_color=_cols_mod,
+            hovertemplate="%{x}<br>%{y}h no trabajadas<extra></extra>",
+        ))
+        _fig_mod.update_layout(
+            plot_bgcolor="white", height=260,
+            margin=dict(t=10, b=10, l=10, r=10),
+            xaxis_title="", yaxis_title="Horas no trabajadas",
+            showlegend=False,
+        )
+        st.plotly_chart(_fig_mod, use_container_width=True)
+        st.caption(
+            f"Datos de {MESES[_mod_mes]} {_mod_año}. "
+            "Solo incluye personal HOURLY DIRECT de Costura. "
+            "Usa los minutos reales registrados (sin redondeo)."
+        )
+
+    # ── 6. (OPCIONAL) Tiempo no productivo acumulado por mes ──
     st.divider()
     st.subheader("⏳ Tiempo no productivo acumulado")
     st.caption(
