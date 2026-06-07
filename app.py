@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -33,14 +34,14 @@ AÑOS     = list(range(2025, 2036))   # 2025 → 2035
 MOTIVOS_LISTA = [
     "Banco / Cajero",
     "Médico propio",
+    "Médico turno mañana",
     "Familiar enfermo",
-    "Enfermedad propia",
+    "Enfermedad propia / Clínica",
     "Obra social / ANSES",
     "Juzgado / Tribunales",
     "Registro Civil / DNI",
     "Escribanía",
     "Carnet de Conducir",
-    "Clínica / Sanatorio",
     "Análisis de sangre",
     "Colegio hijo/a",
     "Escuela hijo/a",
@@ -60,11 +61,12 @@ MOTIVOS_COMPENSAN_SJ = {
     "Carnet de Conducir",
     "Registro Civil / DNI",
     "Obra social / ANSES",
-    "Juzgado / Tribunales",
+    "Juzgado / Tribunales",   # política modificada — sí compensa
     "Escribanía",
     "Trámite personal",
     "Colegio hijo/a",
-    "Otro",  # queda a criterio
+    "Médico turno mañana",    # nuevo: turno mañana sí compensa en SJ
+    "Otro",                   # queda a criterio
 }
 
 # Política Buenos Aires (RR.HH. 036 — convenio): motivos que PERMITEN compensar
@@ -114,9 +116,9 @@ MOTIVO_MAP = {
     "escribania":                "Escribanía",
     "escribanía":                "Escribanía",
     "emicar":                    "Carnet de Conducir",
-    "sanatorio sj":              "Clínica / Sanatorio",
-    "clinica":                   "Clínica / Sanatorio",
-    "clínica":                   "Clínica / Sanatorio",
+    "sanatorio sj":              "Enfermedad propia / Clínica",
+    "clinica":                   "Enfermedad propia / Clínica",
+    "clínica":                   "Enfermedad propia / Clínica",
     "analisis":                  "Análisis de sangre",
     "análisis":                  "Análisis de sangre",
     "analisis de sangre":        "Análisis de sangre",
@@ -193,6 +195,13 @@ def fmt_dur(minutos: float) -> str:
     if h == 0:
         return f"{m} min"
     return f"{h}h {m:02d}min" if m else f"{h}h"
+
+
+def fmt_horas(h: float) -> str:
+    """Formatea horas con soporte de medias horas: 0.5 → '0.5h', 1 → '1h', 1.5 → '1.5h'."""
+    if h == int(h):
+        return f"{int(h)}h"
+    return f"{h:.1f}h"
 
 
 # ─────────────────────────────────────────────
@@ -495,7 +504,7 @@ if pagina == "🔵 Panel Guardia":
 
     with st.form("form_guardia", clear_on_submit=True):
 
-        fecha_permiso = st.date_input("📅 Fecha", value=date.today(), format="DD/MM/YYYY")
+        fecha_permiso = st.date_input("📅 Fecha", value=date.today(), max_value=date.today(), format="DD/MM/YYYY")
 
         # Leer valores del pre-form
         hora_salida  = hora_salida_pre
@@ -752,7 +761,21 @@ elif pagina == "🟢 Panel RRHH":
 
     import calendar as _cal
     _ultimo_dia = date(año_sel, mes_sel, _cal.monthrange(año_sel, mes_sel)[1])
-    saldos_al_cierre = calcular_saldos(permisos_activos, comp_activos, hasta_fecha=_ultimo_dia)
+
+    if modo == "Solo este mes":
+        # Reporte: horas generadas en este mes → al cierre de ese mes
+        saldos_al_cierre = calcular_saldos(
+            permisos_activos[
+                (permisos_activos["fecha"].dt.year == año_sel) &
+                (permisos_activos["fecha"].dt.month == mes_sel)
+            ],
+            comp_activos,   # compensaciones de cualquier fecha que apliquen
+            hasta_fecha=_ultimo_dia,
+        )
+    else:
+        # Reporte: saldo acumulado total hasta hoy
+        saldos_al_cierre = calcular_saldos(permisos_activos, comp_activos)
+
     saldos_actuales  = calcular_saldos(permisos_activos, comp_activos)
     saldos           = saldos_actuales  # alias para métricas
     comp_total = c_f["horas_compensadas"].sum() if not c_f.empty and "horas_compensadas" in c_f.columns else 0
@@ -805,7 +828,7 @@ elif pagina == "🟢 Panel RRHH":
                 f'<td style="padding:5px 10px;">{row["nombre"]}</td>'
                 f'<td style="padding:5px 10px;color:#555;font-size:0.85rem;">{row["clasificacion"]}</td>'
                 f'<td style="padding:5px 10px;font-weight:700;color:#C0392B;text-align:center;">'
-                f'{row["saldo"]:.0f}h</td>'
+                f'{fmt_horas(row["saldo"])}</td>'
                 f'</tr>'
             )
 
@@ -849,7 +872,7 @@ elif pagina == "🟢 Panel RRHH":
         # Botón de descarga PNG — renderiza la tabla como imagen
         import io
         _png_rep = rep[["nombre","sector","clasificacion","saldo"]].copy()
-        _png_rep["saldo"] = _png_rep["saldo"].apply(lambda x: f"{x:.0f}h")
+        _png_rep["saldo"] = _png_rep["saldo"].apply(fmt_horas)
         _png_rep.columns  = ["Apellido y Nombre", "Sector", "Clasificación", "Hs. pendientes"]
 
         _CLASIF_TEXT = {
@@ -921,6 +944,124 @@ elif pagina == "🟢 Panel RRHH":
                 mime="text/csv",
             )
 
+    # ── Reporte: personas que NO compensan (para prima de producción) ──
+    st.divider()
+    st.subheader(f"❌ Reporte: permisos SIN compensación — {MESES[mes_sel]} {año_sel}")
+    st.caption(
+        "Personas que eligieron **NO compensar** sus horas en el período. "
+        "Dato necesario para evaluar prima de producción."
+    )
+
+    _p_no_comp = p_f[p_f["compensa"] == "NO"].copy() if not p_f.empty else pd.DataFrame()
+
+    if _p_no_comp.empty:
+        st.success("✅ No hay permisos sin compensación en este período.")
+    else:
+        _p_no_comp["sector_nc"]  = _p_no_comp["legajo"].map(sector_dict).fillna("Sin sector")
+        _p_no_comp["clasif_nc"]  = _p_no_comp["legajo"].map(clasif_dict).fillna("Sin clasificar")
+        _p_no_comp["fecha_str"]  = _p_no_comp["fecha"].dt.strftime("%d/%m/%Y")
+        _p_no_comp["hs_fmt"]     = _p_no_comp["horas_redondeadas"].apply(fmt_horas)
+
+        _rep_nc = (
+            _p_no_comp.groupby(["nombre", "sector_nc", "clasif_nc"])
+            .agg(
+                permisos=("fecha_str", "count"),
+                horas_no_comp=("horas_redondeadas", "sum"),
+            )
+            .reset_index()
+            .sort_values(["sector_nc", "horas_no_comp"], ascending=[True, False])
+        )
+        _rep_nc["horas_no_comp"] = _rep_nc["horas_no_comp"].apply(fmt_horas)
+
+        # Tabla HTML mismo formato que reporte gerencia
+        _CLASIF_COLOR_NC = {
+            "HOURLY DIRECT":   "#EBF5FB",
+            "HOURLY INDIRECT": "#EAF4F4",
+            "EXEMPT":          "#FEF9E7",
+            "NON EXEMPT":      "#FDEDEC",
+        }
+        _sector_act_nc = None
+        _html_nc = []
+        for _, row in _rep_nc.iterrows():
+            if row["sector_nc"] != _sector_act_nc:
+                _sector_act_nc = row["sector_nc"]
+                _html_nc.append(
+                    f'<tr style="background:#922B21;color:white;font-weight:700;">'
+                    f'<td colspan="4" style="padding:6px 10px;">📁 {_sector_act_nc}</td></tr>'
+                )
+            _bg_nc = _CLASIF_COLOR_NC.get(row["clasif_nc"], "#F8F9FA")
+            _html_nc.append(
+                f'<tr style="background:{_bg_nc};">'
+                f'<td style="padding:5px 10px;">{row["nombre"]}</td>'
+                f'<td style="padding:5px 10px;color:#555;font-size:0.85rem;">{row["clasif_nc"]}</td>'
+                f'<td style="padding:5px 10px;text-align:center;">{row["permisos"]}</td>'
+                f'<td style="padding:5px 10px;font-weight:700;color:#922B21;text-align:center;">'
+                f'{row["horas_no_comp"]}</td>'
+                f'</tr>'
+            )
+        _tabla_nc_html = f"""
+        <style>.nc-table{{width:100%;border-collapse:collapse;font-size:0.9rem;font-family:sans-serif;}}
+        .nc-table th{{background:#922B21;color:white;padding:8px 10px;text-align:left;}}</style>
+        <table class="nc-table">
+          <thead><tr>
+            <th>Apellido y Nombre</th><th>Clasificación</th>
+            <th style="text-align:center;">Permisos</th>
+            <th style="text-align:center;">Hs. no compensadas</th>
+          </tr></thead>
+          <tbody>{"".join(_html_nc)}</tbody>
+        </table>"""
+        st.markdown(_tabla_nc_html, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.caption(
+            f"**{len(_rep_nc)} personas** eligieron no compensar en {MESES[mes_sel]} {año_sel}."
+        )
+
+        # PNG descarga reporte no compensan
+        try:
+            _fig_nc_png = go.Figure(go.Table(
+                header=dict(
+                    values=["Apellido y Nombre","Sector","Clasificación","Permisos","Hs. no compensadas"],
+                    fill_color="#922B21",
+                    font=dict(color="white", size=12, family="Arial"),
+                    align="left", height=32,
+                ),
+                cells=dict(
+                    values=[
+                        _rep_nc["nombre"], _rep_nc["sector_nc"],
+                        _rep_nc["clasif_nc"], _rep_nc["permisos"],
+                        _rep_nc["horas_no_comp"],
+                    ],
+                    fill_color=[
+                        ["white"]*len(_rep_nc), ["white"]*len(_rep_nc),
+                        [_CLASIF_COLOR_NC.get(v,"#F8F9FA") for v in _rep_nc["clasif_nc"]],
+                        ["white"]*len(_rep_nc),
+                        ["#FDEDEC"]*len(_rep_nc),
+                    ],
+                    font=dict(color="#222", size=11, family="Arial"),
+                    align="left", height=28,
+                ),
+            ))
+            _fig_nc_png.update_layout(
+                title=dict(
+                    text=f"GILDAN — Permisos Sin Compensación<br>"
+                         f"<sup>{MESES[mes_sel]} {año_sel} | {planta_activa}</sup>",
+                    font=dict(size=14, color="#922B21"), x=0,
+                ),
+                margin=dict(t=70, b=20, l=10, r=10),
+                height=max(200, 60 + len(_rep_nc) * 28),
+                width=800,
+            )
+            _nc_bytes = _fig_nc_png.to_image(format="png", scale=2)
+            st.download_button(
+                "⬇️ Descargar reporte sin compensación (PNG)",
+                data=_nc_bytes,
+                file_name=f"no_compensan_{MESES[mes_sel]}_{año_sel}.png",
+                mime="image/png",
+                key="dl_nc_png",
+            )
+        except Exception:
+            pass
+
     # ── Saldo actual (a hoy) ────────────────────────────────────
     st.divider()
     st.subheader("📊 Saldo acumulado actual (a hoy)")
@@ -929,9 +1070,9 @@ elif pagina == "🟢 Panel RRHH":
         st.success("✅ Nadie tiene horas pendientes a la fecha.")
     else:
         sa = saldos_actuales[["nombre","debe","compensado","saldo"]].copy()
-        sa["debe"] = sa["debe"].apply(lambda x: f"{x:.0f}h")
-        sa["compensado"] = sa["compensado"].apply(lambda x: f"{x:.0f}h")
-        sa["saldo"] = saldos_actuales["saldo"].apply(lambda x: f"{x:.0f}h")
+        sa["debe"] = sa["debe"].apply(fmt_horas)
+        sa["compensado"] = sa["compensado"].apply(fmt_horas)
+        sa["saldo"] = saldos_actuales["saldo"].apply(fmt_horas)
         sa.columns = ["Nombre","Debe total","Ya compensó","Saldo hoy"]
         sa.index = range(1, len(sa)+1)
         st.dataframe(sa, use_container_width=True, height=min(380, 45+len(sa)*35))
