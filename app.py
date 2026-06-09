@@ -957,20 +957,46 @@ elif pagina == "🟢 Panel RRHH":
     if _p_no_comp.empty:
         st.success("✅ No hay permisos sin compensación en este período.")
     else:
-        _p_no_comp["sector_nc"]  = _p_no_comp["legajo"].map(sector_dict).fillna("Sin sector")
-        _p_no_comp["clasif_nc"]  = _p_no_comp["legajo"].map(clasif_dict).fillna("Sin clasificar")
-        _p_no_comp["fecha_str"]  = _p_no_comp["fecha"].dt.strftime("%d/%m/%Y")
-        _p_no_comp["hs_fmt"]     = _p_no_comp["horas_redondeadas"].apply(fmt_horas)
+        _p_no_comp["sector_nc"] = _p_no_comp["legajo"].map(sector_dict).fillna("Sin sector")
+        _p_no_comp["clasif_nc"] = _p_no_comp["legajo"].map(clasif_dict).fillna("Sin clasificar")
+        _p_no_comp["fecha_str"] = _p_no_comp["fecha"].dt.strftime("%d/%m/%Y")
+
+        # Calcular horas reales desde hora_salida/hora_entrada cuando
+        # horas_redondeadas = 0 (registros históricos sin minutos_reales guardados)
+        def _calc_hs_no_comp(row):
+            # Si ya tiene horas_redondeadas válidas, usarlas
+            if pd.notna(row["horas_redondeadas"]) and row["horas_redondeadas"] > 0:
+                return float(row["horas_redondeadas"])
+            # Si tiene minutos_reales, calcular desde ahí
+            if pd.notna(row["minutos_reales"]) and row["minutos_reales"] > 0:
+                return redondear_horas(row["minutos_reales"])
+            # Último recurso: calcular desde hora_salida y hora_entrada (strings "HH:MM")
+            try:
+                sal = row["hora_salida"]
+                ent = row["hora_entrada"]
+                if (isinstance(sal, str) and isinstance(ent, str)
+                        and len(sal) == 5 and len(ent) == 5 and ent != "S/R"):
+                    h_sal, m_sal = map(int, sal.split(":"))
+                    h_ent, m_ent = map(int, ent.split(":"))
+                    mins = (h_ent * 60 + m_ent) - (h_sal * 60 + m_sal)
+                    return redondear_horas(mins) if mins > 0 else 0.0
+            except Exception:
+                pass
+            return 0.0
+
+        _p_no_comp["hs_real"] = _p_no_comp.apply(_calc_hs_no_comp, axis=1)
 
         _rep_nc = (
             _p_no_comp.groupby(["nombre", "sector_nc", "clasif_nc"])
             .agg(
                 permisos=("fecha_str", "count"),
-                horas_no_comp=("horas_redondeadas", "sum"),
+                horas_no_comp=("hs_real", "sum"),
             )
             .reset_index()
             .sort_values(["sector_nc", "horas_no_comp"], ascending=[True, False])
         )
+        # Excluir personas con 0 horas calculadas (sin datos de horario)
+        _rep_nc = _rep_nc[_rep_nc["horas_no_comp"] > 0].copy()
         _rep_nc["horas_no_comp"] = _rep_nc["horas_no_comp"].apply(fmt_horas)
 
         # Tabla HTML mismo formato que reporte gerencia
