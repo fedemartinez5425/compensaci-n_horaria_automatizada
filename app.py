@@ -1,4 +1,5 @@
 
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -29,6 +30,22 @@ PASSWORD = "1234"
 
 PLANTAS  = ["Fábrica San Juan", "Casa Central Bs. As.", "🏢 Total Empresa"]
 AÑOS     = list(range(2025, 2036))   # 2025 → 2035
+
+# Tope anual de horas a compensar (año calendario, resetea 1° de enero)
+TOPE_HORAS_NORMAL = 8
+TOPE_HORAS_LIDER  = 16
+
+# Líderes con tope ampliado — nombres tal como figuran en el padrón (MAYÚSCULA, "APELLIDO, NOMBRE")
+# Si cambia el padrón, mantener esta lista sincronizada con el campo es_lider.
+LIDERES_SJ = {
+    "SANTANA, SANDRA BETTINA",
+    "RODRIGUEZ, PATRICIA SOLEDAD",
+    "TEJADA, DALINDA MATILDE",
+    "FLORES FRIAS, CELIA ROMINA",
+    "MURO, LILIANA MABEL",
+    "CERDA, CLAUDIA DEL VALLE",
+    "OLIVA ZEBALLOS, ANALIA",
+}
 
 # ── Motivos canónicos ──────────────────────────────────────────
 MOTIVOS_LISTA = [
@@ -237,6 +254,14 @@ def leer_padron(_gc):
             df["clasificacion"] = ""
         else:
             df["clasificacion"] = df["clasificacion"].astype(str).str.strip()
+        # es_lider: columna nueva en Sheets. Si no existe todavía, se infiere
+        # desde LIDERES_SJ como fallback (hasta que se corra el script de migración).
+        if "es_lider" not in df.columns:
+            df["es_lider"] = df["nombre"].apply(lambda n: "SI" if n in LIDERES_SJ else "NO")
+        else:
+            df["es_lider"] = df["es_lider"].astype(str).str.strip().str.upper()
+            df["es_lider"] = df["es_lider"].where(df["es_lider"].isin(["SI", "NO"]),
+                                                    df["nombre"].apply(lambda n: "SI" if n in LIDERES_SJ else "NO"))
     return df
 
 
@@ -280,10 +305,12 @@ def guardar_compensacion(gc, fila: dict):
     leer_compensaciones.clear()
 
 
-def agregar_empleado(gc, legajo: str, nombre: str, sector: str, planta: str, clasificacion: str = ""):
-    # Schema padron: legajo, nombre, sector, centro_costo, planta, activo, clasificacion
+def agregar_empleado(gc, legajo: str, nombre: str, sector: str, planta: str,
+                      clasificacion: str = "", es_lider: str = "NO"):
+    # Schema padron: legajo, nombre, sector, centro_costo, planta, activo, clasificacion, es_lider
     get_wb(gc).worksheet("padron").append_row(
-        [legajo.strip(), nombre.upper().strip(), sector.strip(), "", planta, "SI", clasificacion.strip()],
+        [legajo.strip(), nombre.upper().strip(), sector.strip(), "", planta, "SI",
+         clasificacion.strip(), es_lider],
         value_input_option="RAW"
     )
     leer_padron.clear()
@@ -291,6 +318,29 @@ def agregar_empleado(gc, legajo: str, nombre: str, sector: str, planta: str, cla
 
 def generar_id(prefijo="P"):
     return f"{prefijo}{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+
+# ─────────────────────────────────────────────
+# TOPE ANUAL DE COMPENSACIÓN
+# ─────────────────────────────────────────────
+def obtener_tope(es_lider: str) -> float:
+    """Tope anual de horas a compensar según si la persona es líder."""
+    return TOPE_HORAS_LIDER if str(es_lider).strip().upper() == "SI" else TOPE_HORAS_NORMAL
+
+
+def horas_comprometidas_año(permisos_df: pd.DataFrame, legajo: str, año: int) -> float:
+    """
+    Suma las horas con compensa=SI que una persona ya tiene cargadas
+    en el año calendario indicado. Año calendario = resetea 1° de enero.
+    """
+    if permisos_df.empty:
+        return 0.0
+    p = permisos_df[
+        (permisos_df["legajo"] == legajo) &
+        (permisos_df["compensa"] == "SI") &
+        (permisos_df["fecha"].dt.year == año)
+    ]
+    return float(p["horas_redondeadas"].sum()) if not p.empty else 0.0
 
 
 # ─────────────────────────────────────────────
@@ -486,6 +536,32 @@ if pagina == "🔵 Panel Guardia":
         # Total Empresa: sin política definida globalmente, queda a criterio
         puede_compensar = True
 
+    # ── TOPE ANUAL — chequeo antes de habilitar el radio SI/NO ──
+    # Si la persona ya alcanzó su tope de horas a compensar en el año
+    # calendario actual, se fuerza NO sin importar lo que diga la política
+    # de motivos. El guardia no puede elegir SI en ese caso.
+    tope_alcanzado = False
+    if legajo_resuelto and ES_SJ:
+        _es_lider_sel = padron_activos[padron_activos["legajo"] == legajo_resuelto]["es_lider"].values
+        _es_lider_sel = _es_lider_sel[0] if len(_es_lider_sel) > 0 else "NO"
+        _tope_sel = obtener_tope(_es_lider_sel)
+        _año_actual = date.today().year
+        _comprometidas_sel = horas_comprometidas_año(permisos_activos, legajo_resuelto, _año_actual)
+
+        st.caption(
+            f"📊 Tope anual {_año_actual}: **{_comprometidas_sel:.1f}h / {_tope_sel:.0f}h** "
+            f"{'(líder)' if _es_lider_sel == 'SI' else ''}"
+        )
+
+        if _comprometidas_sel >= _tope_sel:
+            tope_alcanzado = True
+            puede_compensar = False
+            st.warning(
+                f"⚠️ **{nombre_resuelto}** ya alcanzó el tope anual de {_tope_sel:.0f}h para compensar "
+                f"en {_año_actual} (lleva {_comprometidas_sel:.1f}h). Este permiso se registrará como "
+                "**No compensa** automáticamente, sin importar el motivo."
+            )
+
     # Radio compensa — FUERA del form para reactividad con el motivo
     if puede_compensar:
         compensa_pre = st.radio(
@@ -497,7 +573,8 @@ if pagina == "🔵 Panel Guardia":
         )
     else:
         compensa_pre = "NO"
-        st.write("💰 **No compensa** (automático por política)")
+        if not tope_alcanzado:
+            st.write("💰 **No compensa** (automático por política)")
 
     # Si S/R → hora entrada automática 15:00 y deshabilitada
     valor_entrada = HORA_FIN_TURNO if sin_retorno_pre else time(9, 0)
@@ -643,6 +720,13 @@ if pagina == "🔵 Panel Guardia":
             _planta_opts = ["Fábrica", "Casa Central"]
             _planta_def = 0 if ES_SJ else (1 if not ES_TOTAL else 0)
             nvo_planta = st.selectbox("Planta *", _planta_opts, index=_planta_def)
+            nvo_lider = st.radio(
+                "¿Es líder? *",
+                ["NO", "SI"],
+                horizontal=True,
+                help=f"Las líderes tienen tope anual de {TOPE_HORAS_LIDER}h para compensar "
+                     f"en vez de {TOPE_HORAS_NORMAL}h.",
+            )
             if st.form_submit_button("Agregar al padrón", use_container_width=True):
                 nom_clean = nvo_nom.strip().upper()
                 err = []
@@ -658,7 +742,7 @@ if pagina == "🔵 Panel Guardia":
                 else:
                     try:
                         agregar_empleado(gc, nvo_leg.strip(), nom_clean, nvo_sec,
-                                         nvo_planta, nvo_cla)
+                                         nvo_planta, nvo_cla, nvo_lider)
                         st.success(f"✅ {nom_clean} agregado. Recargá la página.")
                     except Exception as e:
                         st.error(f"❌ Error: {e}")
@@ -788,28 +872,53 @@ elif pagina == "🟢 Panel RRHH":
     col_m3.metric("⏳ Horas pendientes (hoy)", f"{saldos_actuales['saldo'].sum():.0f}h" if not saldos_actuales.empty else "0h")
     col_m4.metric(f"✅ Hs. compensadas ({_label_periodo})", f"{comp_total:.0f}h")
 
-    # ── Reporte para gerencia ──
+    # ── Reporte para gerencia ──────────────────────────────────
+    # Incluye Base anual (8h normal / 16h líder), horas consumidas en el
+    # año calendario, disponible y semáforo de estado. Reemplaza el
+    # proceso manual en Excel que se hacía antes de esta función.
     st.divider()
     st.subheader(f"📄 Reporte para Gerencia — {MESES[mes_sel]} {año_sel}")
     st.caption(
-        "Quiénes deben compensar horas y cuántas. "
-        "Sacá captura y enviá a gerencia de planta."
+        "Quiénes deben compensar horas, base anual, consumido y disponible. "
+        "Esta es la ÚNICA fuente del reporte — descargalo en PNG, no lo copies a mano."
     )
     if saldos_al_cierre.empty:
         st.success(f"✅ Ningún empleado tiene horas pendientes al cierre de {MESES[mes_sel]} {año_sel}.")
     else:
-        # Enriquecer saldos con sector y clasificación
+        _año_rep = año_sel  # año calendario sobre el que se evalúa el tope
+
+        # Enriquecer saldos con sector, clasificación, líder, tope y consumido del año
         rep = saldos_al_cierre.copy()
         rep["sector"]        = rep["legajo"].map(sector_dict).fillna("Sin sector")
         rep["clasificacion"] = rep["legajo"].map(clasif_dict).fillna("Sin clasificar")
+        rep["es_lider"]      = rep["legajo"].map(
+            dict(zip(padron_activos["legajo"], padron_activos["es_lider"]))
+        ).fillna("NO")
+        rep["base_anual"]    = rep["es_lider"].apply(obtener_tope)
+        rep["consumido_año"] = rep["legajo"].apply(
+            lambda leg: horas_comprometidas_año(permisos_activos, leg, _año_rep)
+        )
+        rep["disponible"]    = (rep["base_anual"] - rep["consumido_año"]).clip(lower=0)
+        rep["excedente"]     = (rep["consumido_año"] - rep["base_anual"]).clip(lower=0)
+
+        def _estado(row):
+            if row["excedente"] > 0:
+                return "🔴 EXCEDE TOPE"
+            if row["consumido_año"] >= row["base_anual"]:
+                return "🔴 LÍMITE"
+            if row["disponible"] <= 2:
+                return "🟡 ATENCIÓN"
+            return "🟢 OK"
+
+        rep["estado"] = rep.apply(_estado, axis=1)
         rep = rep.sort_values(["sector", "clasificacion", "saldo"], ascending=[True, True, False])
 
         # Colores por clasificación
         CLASIF_COLOR = {
-            "HOURLY DIRECT":   "#EBF5FB",   # azul claro
-            "HOURLY INDIRECT": "#EAF4F4",   # verde agua
-            "EXEMPT":          "#FEF9E7",   # amarillo claro
-            "NON EXEMPT":      "#FDEDEC",   # rojo claro
+            "HOURLY DIRECT":   "#EBF5FB",
+            "HOURLY INDIRECT": "#EAF4F4",
+            "EXEMPT":          "#FEF9E7",
+            "NON EXEMPT":      "#FDEDEC",
         }
 
         # Tabla HTML con agrupación por sector
@@ -820,42 +929,49 @@ elif pagina == "🟢 Panel RRHH":
                 sector_actual = row["sector"]
                 html_rows.append(
                     f'<tr style="background:#1B4F9B;color:white;font-weight:700;">'
-                    f'<td colspan="3" style="padding:6px 10px;">📁 {sector_actual}</td></tr>'
+                    f'<td colspan="7" style="padding:6px 10px;">📁 {sector_actual}</td></tr>'
                 )
             bg = CLASIF_COLOR.get(row["clasificacion"], "#F8F9FA")
+            _nombre_disp = row["nombre"] + (" 👑" if row["es_lider"] == "SI" else "")
             html_rows.append(
                 f'<tr style="background:{bg};">'
-                f'<td style="padding:5px 10px;">{row["nombre"]}</td>'
+                f'<td style="padding:5px 10px;">{_nombre_disp}</td>'
                 f'<td style="padding:5px 10px;color:#555;font-size:0.85rem;">{row["clasificacion"]}</td>'
-                f'<td style="padding:5px 10px;font-weight:700;color:#C0392B;text-align:center;">'
-                f'{fmt_horas(row["saldo"])}</td>'
+                f'<td style="padding:5px 10px;text-align:center;">{fmt_horas(row["base_anual"])}</td>'
+                f'<td style="padding:5px 10px;text-align:center;">{fmt_horas(row["saldo"])}</td>'
+                f'<td style="padding:5px 10px;text-align:center;">{fmt_horas(row["consumido_año"])}</td>'
+                f'<td style="padding:5px 10px;font-weight:700;color:#1A7A4A;text-align:center;">'
+                f'{fmt_horas(row["disponible"])}</td>'
+                f'<td style="padding:5px 10px;text-align:center;">{row["estado"]}</td>'
                 f'</tr>'
             )
 
         tabla_html = f"""
         <style>
-            .rep-table {{width:100%;border-collapse:collapse;font-size:0.9rem;font-family:sans-serif;}}
-            .rep-table th {{background:#1B4F9B;color:white;padding:8px 10px;text-align:left;}}
+            .rep-table {{width:100%;border-collapse:collapse;font-size:0.85rem;font-family:sans-serif;}}
+            .rep-table th {{background:#1B4F9B;color:white;padding:8px 8px;text-align:left;font-size:0.78rem;}}
             .rep-table tr:hover td {{filter:brightness(0.96);}}
         </style>
         <table class="rep-table">
           <thead><tr>
             <th>Apellido y Nombre</th>
             <th>Clasificación</th>
-            <th style="text-align:center;">Hs. pendientes</th>
+            <th style="text-align:center;">Base anual</th>
+            <th style="text-align:center;">Pendiente</th>
+            <th style="text-align:center;">Consumido {_año_rep}</th>
+            <th style="text-align:center;">Disponible</th>
+            <th style="text-align:center;">Estado</th>
           </tr></thead>
           <tbody>{"".join(html_rows)}</tbody>
         </table>
         """
         st.markdown(tabla_html, unsafe_allow_html=True)
+        st.caption("👑 = líder (tope 16h/año)")
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Leyenda de colores
+        # Leyenda de colores por clasificación
         col_l1, col_l2, col_l3, col_l4 = st.columns(4)
-        for col, (clasif, color) in zip(
-            [col_l1, col_l2, col_l3, col_l4],
-            CLASIF_COLOR.items()
-        ):
+        for col, (clasif, color) in zip([col_l1, col_l2, col_l3, col_l4], CLASIF_COLOR.items()):
             col.markdown(
                 f'<div style="background:{color};border-radius:4px;padding:4px 8px;'
                 f'font-size:0.78rem;text-align:center;border:1px solid #ddd;">{clasif}</div>',
@@ -864,16 +980,24 @@ elif pagina == "🟢 Panel RRHH":
 
         st.markdown("<br>", unsafe_allow_html=True)
         total_hs = rep["saldo"].sum()
+        n_excedentes = (rep["excedente"] > 0).sum()
         st.caption(
             f"**{len(rep)} personas** — **{total_hs:.0f}h** pendientes al cierre de {MESES[mes_sel]}. "
-            f"Ordenado por sector → clasificación → horas."
         )
+        if n_excedentes > 0:
+            st.error(
+                f"🔴 **{n_excedentes} persona/s** superaron el tope anual de compensación. "
+                "Las horas excedentes no pueden registrarse como compensa=SI a partir de ahora "
+                "— el sistema las fuerza a No compensa automáticamente."
+            )
 
-        # Botón de descarga PNG — renderiza la tabla como imagen
-        import io
-        _png_rep = rep[["nombre","sector","clasificacion","saldo"]].copy()
-        _png_rep["saldo"] = _png_rep["saldo"].apply(fmt_horas)
-        _png_rep.columns  = ["Apellido y Nombre", "Sector", "Clasificación", "Hs. pendientes"]
+        # Botón de descarga PNG — renderiza la tabla completa como imagen
+        _png_rep = rep[["nombre","sector","clasificacion","base_anual","saldo",
+                        "consumido_año","disponible","estado"]].copy()
+        for _col_h in ["base_anual", "saldo", "consumido_año", "disponible"]:
+            _png_rep[_col_h] = _png_rep[_col_h].apply(fmt_horas)
+        _png_rep.columns = ["Apellido y Nombre","Sector","Clasificación","Base anual",
+                            "Pendiente",f"Consumido {_año_rep}","Disponible","Estado"]
 
         _CLASIF_TEXT = {
             "HOURLY DIRECT":   "#1B4F9B",
@@ -885,13 +1009,12 @@ elif pagina == "🟢 Panel RRHH":
         _font_colors = []
         for col_name in _png_rep.columns:
             if col_name == "Clasificación":
-                _fill_colors.append(
-                    [CLASIF_COLOR.get(v, "#F8F9FA") for v in _png_rep["Clasificación"]]
-                )
-                _font_colors.append(
-                    [_CLASIF_TEXT.get(v, "#333") for v in _png_rep["Clasificación"]]
-                )
-            elif col_name == "Hs. pendientes":
+                _fill_colors.append([CLASIF_COLOR.get(v, "#F8F9FA") for v in _png_rep["Clasificación"]])
+                _font_colors.append([_CLASIF_TEXT.get(v, "#333") for v in _png_rep["Clasificación"]])
+            elif col_name == "Disponible":
+                _fill_colors.append(["#E8F5EE"] * len(_png_rep))
+                _font_colors.append(["#1A7A4A"] * len(_png_rep))
+            elif col_name == "Pendiente":
                 _fill_colors.append(["#FDEDEC"] * len(_png_rep))
                 _font_colors.append(["#C0392B"] * len(_png_rep))
             else:
@@ -902,14 +1025,14 @@ elif pagina == "🟢 Panel RRHH":
             header=dict(
                 values=list(_png_rep.columns),
                 fill_color="#1B4F9B",
-                font=dict(color="white", size=12, family="Arial"),
+                font=dict(color="white", size=11, family="Arial"),
                 align="left",
                 height=32,
             ),
             cells=dict(
                 values=[_png_rep[c] for c in _png_rep.columns],
                 fill_color=_fill_colors,
-                font=dict(color=_font_colors, size=11, family="Arial"),
+                font=dict(color=_font_colors, size=10, family="Arial"),
                 align="left",
                 height=28,
             ),
@@ -917,26 +1040,25 @@ elif pagina == "🟢 Panel RRHH":
         _fig_png.update_layout(
             title=dict(
                 text=f"GILDAN — Reporte de Compensación Horaria<br>"
-                     f"<sup>{MESES[mes_sel]} {año_sel} | {planta_activa}</sup>",
-                font=dict(size=14, color="#1B4F9B"),
+                     f"<sup>{MESES[mes_sel]} {año_sel} | {planta_activa} | "
+                     f"Actualizado al {date.today().strftime('%d/%m/%Y')}</sup>",
+                font=dict(size=13, color="#1B4F9B"),
                 x=0,
             ),
             margin=dict(t=70, b=20, l=10, r=10),
-            height=max(200, 60 + len(_png_rep) * 28),
-            width=800,
+            height=max(220, 60 + len(_png_rep) * 28),
+            width=1000,
         )
         try:
             _img_bytes = _fig_png.to_image(format="png", scale=2)
             st.download_button(
-                "⬇️ Descargar reporte PNG",
+                "⬇️ Descargar reporte PNG (única fuente para gerencia)",
                 data=_img_bytes,
                 file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.png",
                 mime="image/png",
             )
-        except Exception as _png_err:
-            # Fallback a CSV si kaleido no está disponible en el entorno
-            _csv_fb = rep[["nombre","sector","clasificacion","saldo"]].copy()
-            _csv_fb.columns = ["Nombre","Sector","Clasificacion","Horas_pendientes"]
+        except Exception:
+            _csv_fb = _png_rep.copy()
             st.download_button(
                 "⬇️ Descargar reporte CSV (instalar kaleido para PNG)",
                 _csv_fb.to_csv(index=False, encoding="utf-8-sig"),
@@ -1102,6 +1224,57 @@ elif pagina == "🟢 Panel RRHH":
         sa.columns = ["Nombre","Debe total","Ya compensó","Saldo hoy"]
         sa.index = range(1, len(sa)+1)
         st.dataframe(sa, use_container_width=True, height=min(380, 45+len(sa)*35))
+
+    # ── Histórico de compensaciones por persona ──────────────────
+    st.divider()
+    st.subheader("📜 Histórico de compensaciones")
+    st.caption(
+        "Consultá todas las compensaciones registradas para una persona específica, "
+        "incluido el detalle de fecha y observación de cada una."
+    )
+    _hist_sel = st.selectbox(
+        "Empleado/a",
+        ["— Seleccioná un nombre —"] + nombres_lista,
+        key="hist_comp_sel",
+    )
+    if _hist_sel and _hist_sel != "— Seleccioná un nombre —":
+        _leg_hist = nombre_a_legajo.get(_hist_sel, "")
+        _hist_comp = comp_activos[comp_activos["legajo"] == _leg_hist].copy() if not comp_activos.empty else pd.DataFrame()
+        _hist_perm = permisos_activos[
+            (permisos_activos["legajo"] == _leg_hist) & (permisos_activos["compensa"] == "SI")
+        ].copy() if not permisos_activos.empty else pd.DataFrame()
+
+        _es_lider_hist = padron_activos[padron_activos["legajo"] == _leg_hist]["es_lider"].values
+        _es_lider_hist = _es_lider_hist[0] if len(_es_lider_hist) > 0 else "NO"
+        _tope_hist = obtener_tope(_es_lider_hist)
+
+        col_h1, col_h2, col_h3 = st.columns(3)
+        col_h1.metric("Tipo", "👑 Líder" if _es_lider_hist == "SI" else "Empleada")
+        col_h1.caption(f"Tope anual: {_tope_hist:.0f}h")
+        _consumido_actual_año = horas_comprometidas_año(permisos_activos, _leg_hist, date.today().year)
+        col_h2.metric(f"Consumido {date.today().year}", fmt_horas(_consumido_actual_año))
+        col_h3.metric("Compensado histórico (todas las fechas)",
+                      fmt_horas(_hist_comp["horas_compensadas"].sum()) if not _hist_comp.empty else "0h")
+
+        st.markdown("**Permisos que generaron deuda (compensa = SI)**")
+        if _hist_perm.empty:
+            st.caption("Sin permisos con compensa=SI registrados.")
+        else:
+            _hp = _hist_perm[["fecha","motivo","horas_redondeadas"]].copy()
+            _hp["fecha"] = _hp["fecha"].dt.strftime("%d/%m/%Y")
+            _hp["horas_redondeadas"] = _hp["horas_redondeadas"].apply(fmt_horas)
+            _hp.columns = ["Fecha","Motivo","Horas generadas"]
+            st.dataframe(_hp.sort_values("Fecha"), use_container_width=True, hide_index=True)
+
+        st.markdown("**Compensaciones registradas**")
+        if _hist_comp.empty:
+            st.caption("Sin compensaciones registradas todavía.")
+        else:
+            _hc = _hist_comp[["fecha_compensacion","horas_compensadas","observacion","registrado_por"]].copy()
+            _hc["fecha_compensacion"] = _hc["fecha_compensacion"].dt.strftime("%d/%m/%Y")
+            _hc["horas_compensadas"] = _hc["horas_compensadas"].apply(fmt_horas)
+            _hc.columns = ["Fecha compensó","Horas","Observación","Registrado por"]
+            st.dataframe(_hc.sort_values("Fecha compensó"), use_container_width=True, hide_index=True)
 
     # ── Registrar compensación ──
     st.divider()
