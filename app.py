@@ -1429,21 +1429,36 @@ elif pagina == "🟢 Panel RRHH":
             elif not registra.strip():
                 st.error("❌ Falta tu nombre.")
             else:
-                try:
-                    guardar_compensacion(gc, {
-                        "id":                generar_id("C"),
-                        "fecha_compensacion": fecha_comp.strftime("%Y-%m-%d"),
-                        "legajo":            leg_c,
-                        "nombre":            nom_c,
-                        "horas_compensadas": hs_comp,
-                        "observacion":       obs,
-                        "registrado_por":    registra.strip(),
-                        "planta":            KEY_PLANTA,
-                        "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    })
-                    st.success(f"✅ {nom_c} — {hs_comp}h el {fecha_comp.strftime('%d/%m/%Y')}")
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
+                # Validación: bloquear compensación duplicada (misma persona, mismo día)
+                _dup = False
+                if not comp_activos.empty and leg_c:
+                    _dup_mask = (
+                        (comp_activos["legajo"] == leg_c) &
+                        (comp_activos["fecha_compensacion"].dt.date == fecha_comp)
+                    )
+                    if _dup_mask.any():
+                        st.error(
+                            f"❌ **{nom_c}** ya tiene una compensación registrada "
+                            f"el {fecha_comp.strftime('%d/%m/%Y')}. "
+                            "No se puede compensar dos veces el mismo día."
+                        )
+                        _dup = True
+                if not _dup:
+                    try:
+                        guardar_compensacion(gc, {
+                            "id":                generar_id("C"),
+                            "fecha_compensacion": fecha_comp.strftime("%Y-%m-%d"),
+                            "legajo":            leg_c,
+                            "nombre":            nom_c,
+                            "horas_compensadas": hs_comp,
+                            "observacion":       obs,
+                            "registrado_por":    registra.strip(),
+                            "planta":            KEY_PLANTA,
+                            "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        })
+                        st.success(f"✅ {nom_c} — {hs_comp}h el {fecha_comp.strftime('%d/%m/%Y')}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
 
     # Detalle del período
     st.divider()
@@ -1732,22 +1747,37 @@ elif pagina == "📊 Análisis":
         "Métrica clave de calidad de producción — calculada automáticamente."
     )
 
-    # Filtros de período para este análisis
+    # ── Selector de rango de fechas (reemplaza año/mes)
     _mod_col1, _mod_col2 = st.columns(2)
     with _mod_col1:
-        _mod_año = st.selectbox("Año", AÑOS,
-                                index=AÑOS.index(min(date.today().year, max(AÑOS))),
-                                key="mod_año")
+        _mod_desde = st.date_input(
+            "📅 Desde",
+            value=date.today().replace(day=1),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="mod_desde",
+        )
     with _mod_col2:
-        _mod_mes = st.selectbox("Mes", list(MESES.keys()),
-                                index=date.today().month - 1,
-                                format_func=lambda x: MESES[x],
-                                key="mod_mes")
+        _mod_hasta = st.date_input(
+            "📅 Hasta",
+            value=date.today(),
+            max_value=date.today(),
+            format="DD/MM/YYYY",
+            key="mod_hasta",
+        )
+
+    if _mod_desde > _mod_hasta:
+        st.warning("⚠️ La fecha 'Desde' no puede ser posterior a 'Hasta'.")
+        st.stop()
+
+    _mod_label = f"{_mod_desde.strftime('%d/%m/%Y')} — {_mod_hasta.strftime('%d/%m/%Y')}"
+    # 0.5h = almuerzo a descontar por día con permisos (pausa de mediodía)
+    _ALMUERZO_H = 0.5
 
     # Cruzar permisos con padrón para obtener clasificacion y sector
     _df_mod = permisos_planta.copy()
-    _df_mod["sector_emp"]  = _df_mod["legajo"].map(sector_dict).fillna("")
-    _df_mod["clasif_emp"]  = _df_mod["legajo"].map(clasif_dict).fillna("")
+    _df_mod["sector_emp"] = _df_mod["legajo"].map(sector_dict).fillna("")
+    _df_mod["clasif_emp"] = _df_mod["legajo"].map(clasif_dict).fillna("")
 
     # Filtrar: solo MOD = HOURLY DIRECT + sector que contenga "COSTURA"
     _df_mod = _df_mod[
@@ -1755,71 +1785,62 @@ elif pagina == "📊 Análisis":
         (_df_mod["sector_emp"].str.upper().str.contains("COSTURA", na=False))
     ].copy()
 
-    # Filtrar por período seleccionado
+    # Filtrar por rango de fechas
     _df_mod = _df_mod[
-        (_df_mod["fecha"].dt.year == _mod_año) &
-        (_df_mod["fecha"].dt.month == _mod_mes)
+        (_df_mod["fecha"].dt.date >= _mod_desde) &
+        (_df_mod["fecha"].dt.date <= _mod_hasta)
     ].copy()
 
     if _df_mod.empty:
-        st.info(f"No hay permisos de MOD registrados en {MESES[_mod_mes]} {_mod_año}.")
+        st.info(f"No hay permisos de MOD en {_mod_label}.")
     else:
-        # Agrupar por fecha: total horas no trabajadas y personas afectadas
         _df_mod["fecha_str"] = _df_mod["fecha"].dt.strftime("%d/%m/%Y")
+        # Horas brutas por día
         _resumen_dia = (
             _df_mod.groupby("fecha_str")
             .agg(
-                total_horas=("minutos_reales", lambda x: round(x.sum() / 60, 2)),
+                hs_brutas=("minutos_reales", lambda x: x.sum() / 60),
                 personas=("nombre", "nunique"),
                 nombres=("nombre", lambda x: ", ".join(sorted(x.unique())))
             )
             .reset_index()
-            .rename(columns={
-                "fecha_str": "Fecha",
-                "total_horas": "Hs. no trabajadas",
-                "personas": "Personas",
-                "nombres": "Empleados"
-            })
-            .sort_values("Fecha")
         )
+        # Descontar almuerzo (0.5h) por día — tiempo de pausa de mediodía
+        _resumen_dia["Hs. no trabajadas"] = (
+            (_resumen_dia["hs_brutas"] - _ALMUERZO_H).clip(lower=0).round(2)
+        )
+        _resumen_dia = _resumen_dia.rename(columns={
+            "fecha_str": "Fecha", "personas": "Personas", "nombres": "Empleados"
+        })[["Fecha", "Hs. no trabajadas", "Personas", "Empleados"]].sort_values("Fecha")
 
-        # Métricas del período
+        _total_mod = _resumen_dia["Hs. no trabajadas"].sum()
+
         _tm1, _tm2, _tm3 = st.columns(3)
-        _tm1.metric("Total hs. no trabajadas (MOD)", f"{_resumen_dia['Hs. no trabajadas'].sum():.1f}h")
+        _tm1.metric("Total hs. no trabajadas (MOD)", f"{_total_mod:.2f}h")
         _tm2.metric("Días con ausentismo MOD", len(_resumen_dia))
         _tm3.metric("Personas MOD afectadas", _df_mod["nombre"].nunique())
 
-        # Tabla diaria
-        st.dataframe(
-            _resumen_dia,
-            use_container_width=True,
-            hide_index=True,
-            height=min(420, 45 + len(_resumen_dia) * 35),
-        )
+        st.dataframe(_resumen_dia, use_container_width=True, hide_index=True,
+                     height=min(420, 45 + len(_resumen_dia) * 35))
 
-        # Gráfico de barras diario
         _max_mod = _resumen_dia["Hs. no trabajadas"].max()
         _cols_mod = ["#C0392B" if v == _max_mod else "#E67E22"
                      for v in _resumen_dia["Hs. no trabajadas"]]
         _fig_mod = go.Figure(go.Bar(
-            x=_resumen_dia["Fecha"],
-            y=_resumen_dia["Hs. no trabajadas"],
-            text=_resumen_dia["Hs. no trabajadas"].apply(lambda x: f"{x:.1f}h"),
-            textposition="outside",
-            marker_color=_cols_mod,
-            hovertemplate="%{x}<br>%{y}h no trabajadas<extra></extra>",
+            x=_resumen_dia["Fecha"], y=_resumen_dia["Hs. no trabajadas"],
+            text=_resumen_dia["Hs. no trabajadas"].apply(lambda x: f"{x:.2f}h"),
+            textposition="outside", marker_color=_cols_mod,
+            hovertemplate="%{x}<br>%{y:.2f}h no trabajadas<extra></extra>",
         ))
         _fig_mod.update_layout(
             plot_bgcolor="white", height=260,
             margin=dict(t=10, b=10, l=10, r=10),
-            xaxis_title="", yaxis_title="Horas no trabajadas",
-            showlegend=False,
+            xaxis_title="", yaxis_title="Horas no trabajadas", showlegend=False,
         )
         st.plotly_chart(_fig_mod, use_container_width=True)
         st.caption(
-            f"Datos de {MESES[_mod_mes]} {_mod_año}. "
-            "Solo incluye personal HOURLY DIRECT de Costura. "
-            "Usa los minutos reales registrados (sin redondeo)."
+            f"Período: {_mod_label}. Solo HOURLY DIRECT de Costura. "
+            f"Horas brutas menos {_ALMUERZO_H}h de almuerzo por día. Decimales exactos."
         )
 
     # ── 5b. MOD que NO compensa — para evaluar prima de producción ──
@@ -1831,8 +1852,7 @@ elif pagina == "📊 Análisis":
         "perdido que no se recupera — dato clave para evaluar prima de producción."
     )
 
-    # Mismo cruce sector/clasificación que el bloque MOD de arriba,
-    # pero filtrando compensa = NO en vez de usar todos los registros.
+    # Usa el mismo rango _mod_desde/_mod_hasta del bloque MOD de arriba
     _df_mod_nc = permisos_planta.copy()
     _df_mod_nc["sector_emp"] = _df_mod_nc["legajo"].map(sector_dict).fillna("")
     _df_mod_nc["clasif_emp"] = _df_mod_nc["legajo"].map(clasif_dict).fillna("")
@@ -1840,32 +1860,25 @@ elif pagina == "📊 Análisis":
     _df_mod_nc = _df_mod_nc[
         (_df_mod_nc["clasif_emp"].str.upper() == "HOURLY DIRECT") &
         (_df_mod_nc["sector_emp"].str.upper().str.contains("COSTURA", na=False)) &
-        (_df_mod_nc["compensa"] == "NO")
-    ].copy()
-
-    # Mismo período seleccionado arriba (_mod_año / _mod_mes)
-    _df_mod_nc = _df_mod_nc[
-        (_df_mod_nc["fecha"].dt.year == _mod_año) &
-        (_df_mod_nc["fecha"].dt.month == _mod_mes)
+        (_df_mod_nc["compensa"] == "NO") &
+        (_df_mod_nc["fecha"].dt.date >= _mod_desde) &
+        (_df_mod_nc["fecha"].dt.date <= _mod_hasta)
     ].copy()
 
     if _df_mod_nc.empty:
-        st.success(f"✅ No hay permisos MOD sin compensar en {MESES[_mod_mes]} {_mod_año}.")
+        st.success(f"✅ No hay permisos MOD sin compensar en {_mod_label}.")
     else:
-        # Calcular horas reales (igual lógica que el reporte de no-compensan:
-        # prioriza horas_redondeadas, después minutos_reales, después hora_salida/entrada)
+        # Horas desde minutos_reales (decimales exactos) o fallback a hora_salida/entrada
         def _calc_hs_mod_nc(row):
-            if pd.notna(row["horas_redondeadas"]) and row["horas_redondeadas"] > 0:
-                return float(row["horas_redondeadas"])
             if pd.notna(row["minutos_reales"]) and row["minutos_reales"] > 0:
-                return redondear_horas(row["minutos_reales"])
+                return round(row["minutos_reales"] / 60, 2)
             try:
                 sal, ent = row["hora_salida"], row["hora_entrada"]
-                if isinstance(sal, str) and isinstance(ent, str) and len(sal) == 5 and len(ent) == 5 and ent != "S/R":
+                if isinstance(sal, str) and isinstance(ent, str) and len(sal)==5 and len(ent)==5 and ent!="S/R":
                     h_s, m_s = map(int, sal.split(":"))
                     h_e, m_e = map(int, ent.split(":"))
-                    mins = (h_e * 60 + m_e) - (h_s * 60 + m_s)
-                    return redondear_horas(mins) if mins > 0 else 0.0
+                    mins = (h_e*60+m_e) - (h_s*60+m_s)
+                    return round(mins/60, 2) if mins > 0 else 0.0
             except Exception:
                 pass
             return 0.0
@@ -1873,13 +1886,7 @@ elif pagina == "📊 Análisis":
         _df_mod_nc["hs_real"] = _df_mod_nc.apply(_calc_hs_mod_nc, axis=1)
         _df_mod_nc["fecha_str"] = _df_mod_nc["fecha"].dt.strftime("%d/%m/%Y")
 
-        # Métricas
-        _tmnc1, _tmnc2, _tmnc3 = st.columns(3)
-        _tmnc1.metric("Total hs. MOD no compensadas", fmt_horas(_df_mod_nc["hs_real"].sum()))
-        _tmnc2.metric("Días con ausentismo sin compensar", _df_mod_nc["fecha_str"].nunique())
-        _tmnc3.metric("Personas MOD afectadas", _df_mod_nc["nombre"].nunique())
-
-        # Tabla diaria agrupada
+        # Agrupar por día y descontar almuerzo
         _resumen_mod_nc = (
             _df_mod_nc.groupby("fecha_str")
             .agg(
@@ -1888,24 +1895,24 @@ elif pagina == "📊 Análisis":
                 nombres=("nombre", lambda x: ", ".join(sorted(x.unique()))),
             )
             .reset_index()
-            .rename(columns={
-                "fecha_str": "Fecha",
-                "total_horas": "Hs. no compensadas",
-                "personas": "Personas",
-                "nombres": "Empleados",
-            })
-            .sort_values("Fecha")
         )
-        _resumen_mod_nc["Hs. no compensadas"] = _resumen_mod_nc["Hs. no compensadas"].apply(fmt_horas)
-
-        st.dataframe(
-            _resumen_mod_nc,
-            use_container_width=True,
-            hide_index=True,
-            height=min(420, 45 + len(_resumen_mod_nc) * 35),
+        _resumen_mod_nc["total_horas"] = (
+            (_resumen_mod_nc["total_horas"] - _ALMUERZO_H).clip(lower=0).round(2)
         )
+        _resumen_mod_nc = _resumen_mod_nc.rename(columns={
+            "fecha_str": "Fecha", "total_horas": "Hs. no compensadas",
+            "personas": "Personas", "nombres": "Empleados",
+        }).sort_values("Fecha")
 
-        # Detalle por persona (motivo más frecuente de pérdida)
+        _total_nc = _resumen_mod_nc["Hs. no compensadas"].sum()
+        _tmnc1, _tmnc2, _tmnc3 = st.columns(3)
+        _tmnc1.metric("Total hs. MOD no compensadas", f"{_total_nc:.2f}h")
+        _tmnc2.metric("Días con ausentismo sin compensar", len(_resumen_mod_nc))
+        _tmnc3.metric("Personas MOD afectadas", _df_mod_nc["nombre"].nunique())
+
+        st.dataframe(_resumen_mod_nc, use_container_width=True, hide_index=True,
+                     height=min(420, 45 + len(_resumen_mod_nc) * 35))
+
         st.markdown("**Detalle por persona y motivo**")
         _detalle_mod_nc = (
             _df_mod_nc.groupby(["nombre", "motivo"])
@@ -1913,13 +1920,13 @@ elif pagina == "📊 Análisis":
             .reset_index()
             .sort_values("horas", ascending=False)
         )
-        _detalle_mod_nc["horas"] = _detalle_mod_nc["horas"].apply(fmt_horas)
+        _detalle_mod_nc["horas"] = _detalle_mod_nc["horas"].apply(lambda x: f"{x:.2f}h")
         _detalle_mod_nc.columns = ["Nombre", "Motivo", "Permisos", "Horas"]
         st.dataframe(_detalle_mod_nc, use_container_width=True, hide_index=True)
 
         st.caption(
-            f"Datos de {MESES[_mod_mes]} {_mod_año}. Solo HOURLY DIRECT de Costura con compensa=NO. "
-            "Este tiempo no se recupera — impacta directo en producción y es insumo para evaluar prima."
+            f"Período: {_mod_label}. Solo HOURLY DIRECT de Costura con compensa=NO. "
+            f"Descuento de {_ALMUERZO_H}h de almuerzo por día. Decimales exactos."
         )
 
     # ── 6. (OPCIONAL) Tiempo no productivo acumulado por mes ──
