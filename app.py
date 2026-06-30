@@ -1,5 +1,3 @@
-
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -424,7 +422,7 @@ with st.sidebar:
     st.divider()
     pagina = st.radio(
         "Sección:",
-        ["🔵 Panel Guardia", "🟢 Panel RRHH", "📊 Análisis"],
+        ["🔵 Panel Guardia", "🟢 Panel RRHH", "📊 Análisis", "📖 Cómo se calcula"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1021,20 +1019,27 @@ elif pagina == "🟢 Panel RRHH":
                 _fill_colors.append(["white"] * len(_png_rep))
                 _font_colors.append(["#222"] * len(_png_rep))
 
+        # PNG — alto calculado correctamente para que no se corte
+        _n_filas_png = len(_png_rep)
+        _row_h_px    = 32   # px por fila (generoso para que entre texto)
+        _header_h    = 40
+        _title_h     = 70
+        _png_height  = _title_h + _header_h + (_n_filas_png * _row_h_px) + 40
+
         _fig_png = go.Figure(go.Table(
             header=dict(
                 values=list(_png_rep.columns),
                 fill_color="#1B4F9B",
                 font=dict(color="white", size=11, family="Arial"),
                 align="left",
-                height=32,
+                height=_header_h,
             ),
             cells=dict(
                 values=[_png_rep[c] for c in _png_rep.columns],
                 fill_color=_fill_colors,
                 font=dict(color=_font_colors, size=10, family="Arial"),
                 align="left",
-                height=28,
+                height=_row_h_px,
             ),
         ))
         _fig_png.update_layout(
@@ -1045,26 +1050,139 @@ elif pagina == "🟢 Panel RRHH":
                 font=dict(size=13, color="#1B4F9B"),
                 x=0,
             ),
-            margin=dict(t=70, b=20, l=10, r=10),
-            height=max(220, 60 + len(_png_rep) * 28),
-            width=1000,
+            margin=dict(t=_title_h, b=30, l=10, r=10),
+            height=_png_height,
+            width=1100,
         )
-        try:
-            _img_bytes = _fig_png.to_image(format="png", scale=2)
-            st.download_button(
-                "⬇️ Descargar reporte PNG (única fuente para gerencia)",
-                data=_img_bytes,
-                file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.png",
-                mime="image/png",
-            )
-        except Exception:
-            _csv_fb = _png_rep.copy()
-            st.download_button(
-                "⬇️ Descargar reporte CSV (instalar kaleido para PNG)",
-                _csv_fb.to_csv(index=False, encoding="utf-8-sig"),
-                file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.csv",
-                mime="text/csv",
-            )
+
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            try:
+                _img_bytes = _fig_png.to_image(format="png", scale=2)
+                st.download_button(
+                    "⬇️ Descargar PNG",
+                    data=_img_bytes,
+                    file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.png",
+                    mime="image/png",
+                    use_container_width=True,
+                )
+            except Exception:
+                st.caption("PNG no disponible (kaleido no instalado)")
+
+        with col_dl2:
+            # Excel con formato — openpyxl
+            try:
+                import io as _io
+                import openpyxl
+                from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+                from openpyxl.utils import get_column_letter
+
+                _wb_xl = openpyxl.Workbook()
+                _ws_xl = _wb_xl.active
+                _ws_xl.title = f"Reporte {MESES[mes_sel]} {año_sel}"
+
+                # Título
+                _ws_xl.merge_cells("A1:H1")
+                _ws_xl["A1"] = f"GILDAN — Reporte de Compensación Horaria | {MESES[mes_sel]} {año_sel} | {planta_activa}"
+                _ws_xl["A1"].font = Font(bold=True, size=13, color="FFFFFF")
+                _ws_xl["A1"].fill = PatternFill("solid", fgColor="1B4F9B")
+                _ws_xl["A1"].alignment = Alignment(horizontal="left", vertical="center")
+                _ws_xl.row_dimensions[1].height = 28
+
+                # Headers
+                _xl_cols = list(_png_rep.columns)
+                for ci, col_name in enumerate(_xl_cols, 1):
+                    cell = _ws_xl.cell(row=2, column=ci, value=col_name)
+                    cell.font = Font(bold=True, color="FFFFFF", size=10)
+                    cell.fill = PatternFill("solid", fgColor="2471D5")
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                _ws_xl.row_dimensions[2].height = 22
+
+                # Colores de fill por clasificación (openpyxl no acepta #)
+                _xl_clasif_fill = {
+                    "HOURLY DIRECT":   "EBF5FB",
+                    "HOURLY INDIRECT": "EAF4F4",
+                    "EXEMPT":          "FEF9E7",
+                    "NON EXEMPT":      "FDEDEC",
+                }
+                _xl_estado_fill = {
+                    "🟢 OK":         "D5EFE3",
+                    "🟡 ATENCIÓN":   "FEF0E0",
+                    "🔴 LÍMITE":     "FDEDEC",
+                    "🔴 EXCEDE TOPE":"FDEDEC",
+                }
+
+                _thin = Side(style="thin", color="CCCCCC")
+                _border = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+
+                sector_xl = None
+                xl_row = 3
+                for _, xl_r in _png_rep.iterrows():
+                    # Fila separadora de sector
+                    if xl_r["Sector"] != sector_xl:
+                        sector_xl = xl_r["Sector"]
+                        _ws_xl.merge_cells(
+                            start_row=xl_row, start_column=1,
+                            end_row=xl_row, end_column=len(_xl_cols)
+                        )
+                        _sec_cell = _ws_xl.cell(row=xl_row, column=1, value=f"  {sector_xl}")
+                        _sec_cell.font = Font(bold=True, color="FFFFFF", size=10)
+                        _sec_cell.fill = PatternFill("solid", fgColor="1B4F9B")
+                        _sec_cell.alignment = Alignment(vertical="center")
+                        _ws_xl.row_dimensions[xl_row].height = 18
+                        xl_row += 1
+
+                    _clasif_fill = _xl_clasif_fill.get(xl_r.get("Clasificación", ""), "FFFFFF")
+                    for ci, col_name in enumerate(_xl_cols, 1):
+                        val = xl_r[col_name]
+                        cell = _ws_xl.cell(row=xl_row, column=ci, value=val)
+                        cell.border = _border
+                        cell.alignment = Alignment(horizontal="center" if ci > 2 else "left",
+                                                   vertical="center")
+                        cell.font = Font(size=10)
+                        # Color por columna
+                        if col_name == "Clasificación":
+                            cell.fill = PatternFill("solid", fgColor=_clasif_fill)
+                        elif col_name == "Estado":
+                            _ef = _xl_estado_fill.get(str(val), "FFFFFF")
+                            cell.fill = PatternFill("solid", fgColor=_ef)
+                            cell.font = Font(bold=True, size=10)
+                        elif col_name == "Pendiente":
+                            cell.fill = PatternFill("solid", fgColor="FDEDEC")
+                            cell.font = Font(color="C0392B", bold=True, size=10)
+                        elif col_name == "Disponible":
+                            cell.fill = PatternFill("solid", fgColor="E8F5EE")
+                            cell.font = Font(color="1A7A4A", bold=True, size=10)
+                        else:
+                            cell.fill = PatternFill("solid", fgColor="FFFFFF")
+                    _ws_xl.row_dimensions[xl_row].height = 17
+                    xl_row += 1
+
+                # Ancho de columnas
+                _col_widths = [32, 22, 18, 11, 11, 14, 11, 16]
+                for ci, w in enumerate(_col_widths, 1):
+                    _ws_xl.column_dimensions[get_column_letter(ci)].width = w
+
+                _xl_bytes = _io.BytesIO()
+                _wb_xl.save(_xl_bytes)
+                _xl_bytes.seek(0)
+                st.download_button(
+                    "⬇️ Descargar Excel",
+                    data=_xl_bytes.getvalue(),
+                    file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            except Exception as _xl_err:
+                # Fallback CSV
+                _csv_fb = _png_rep.copy()
+                st.download_button(
+                    "⬇️ Descargar CSV",
+                    _csv_fb.to_csv(index=False, encoding="utf-8-sig"),
+                    file_name=f"reporte_gerencia_{MESES[mes_sel]}_{año_sel}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
 
     # ── Reporte: personas que NO compensan (para prima de producción) ──
     st.divider()
@@ -1704,6 +1822,106 @@ elif pagina == "📊 Análisis":
             "Usa los minutos reales registrados (sin redondeo)."
         )
 
+    # ── 5b. MOD que NO compensa — para evaluar prima de producción ──
+    st.divider()
+    st.subheader("🔧❌ Horas MOD sin compensar")
+    st.caption(
+        "Permisos de **HOURLY DIRECT** del sector **COSTURA** donde la persona "
+        "eligió o le correspondió **NO compensar**. Es tiempo de producción "
+        "perdido que no se recupera — dato clave para evaluar prima de producción."
+    )
+
+    # Mismo cruce sector/clasificación que el bloque MOD de arriba,
+    # pero filtrando compensa = NO en vez de usar todos los registros.
+    _df_mod_nc = permisos_planta.copy()
+    _df_mod_nc["sector_emp"] = _df_mod_nc["legajo"].map(sector_dict).fillna("")
+    _df_mod_nc["clasif_emp"] = _df_mod_nc["legajo"].map(clasif_dict).fillna("")
+
+    _df_mod_nc = _df_mod_nc[
+        (_df_mod_nc["clasif_emp"].str.upper() == "HOURLY DIRECT") &
+        (_df_mod_nc["sector_emp"].str.upper().str.contains("COSTURA", na=False)) &
+        (_df_mod_nc["compensa"] == "NO")
+    ].copy()
+
+    # Mismo período seleccionado arriba (_mod_año / _mod_mes)
+    _df_mod_nc = _df_mod_nc[
+        (_df_mod_nc["fecha"].dt.year == _mod_año) &
+        (_df_mod_nc["fecha"].dt.month == _mod_mes)
+    ].copy()
+
+    if _df_mod_nc.empty:
+        st.success(f"✅ No hay permisos MOD sin compensar en {MESES[_mod_mes]} {_mod_año}.")
+    else:
+        # Calcular horas reales (igual lógica que el reporte de no-compensan:
+        # prioriza horas_redondeadas, después minutos_reales, después hora_salida/entrada)
+        def _calc_hs_mod_nc(row):
+            if pd.notna(row["horas_redondeadas"]) and row["horas_redondeadas"] > 0:
+                return float(row["horas_redondeadas"])
+            if pd.notna(row["minutos_reales"]) and row["minutos_reales"] > 0:
+                return redondear_horas(row["minutos_reales"])
+            try:
+                sal, ent = row["hora_salida"], row["hora_entrada"]
+                if isinstance(sal, str) and isinstance(ent, str) and len(sal) == 5 and len(ent) == 5 and ent != "S/R":
+                    h_s, m_s = map(int, sal.split(":"))
+                    h_e, m_e = map(int, ent.split(":"))
+                    mins = (h_e * 60 + m_e) - (h_s * 60 + m_s)
+                    return redondear_horas(mins) if mins > 0 else 0.0
+            except Exception:
+                pass
+            return 0.0
+
+        _df_mod_nc["hs_real"] = _df_mod_nc.apply(_calc_hs_mod_nc, axis=1)
+        _df_mod_nc["fecha_str"] = _df_mod_nc["fecha"].dt.strftime("%d/%m/%Y")
+
+        # Métricas
+        _tmnc1, _tmnc2, _tmnc3 = st.columns(3)
+        _tmnc1.metric("Total hs. MOD no compensadas", fmt_horas(_df_mod_nc["hs_real"].sum()))
+        _tmnc2.metric("Días con ausentismo sin compensar", _df_mod_nc["fecha_str"].nunique())
+        _tmnc3.metric("Personas MOD afectadas", _df_mod_nc["nombre"].nunique())
+
+        # Tabla diaria agrupada
+        _resumen_mod_nc = (
+            _df_mod_nc.groupby("fecha_str")
+            .agg(
+                total_horas=("hs_real", "sum"),
+                personas=("nombre", "nunique"),
+                nombres=("nombre", lambda x: ", ".join(sorted(x.unique()))),
+            )
+            .reset_index()
+            .rename(columns={
+                "fecha_str": "Fecha",
+                "total_horas": "Hs. no compensadas",
+                "personas": "Personas",
+                "nombres": "Empleados",
+            })
+            .sort_values("Fecha")
+        )
+        _resumen_mod_nc["Hs. no compensadas"] = _resumen_mod_nc["Hs. no compensadas"].apply(fmt_horas)
+
+        st.dataframe(
+            _resumen_mod_nc,
+            use_container_width=True,
+            hide_index=True,
+            height=min(420, 45 + len(_resumen_mod_nc) * 35),
+        )
+
+        # Detalle por persona (motivo más frecuente de pérdida)
+        st.markdown("**Detalle por persona y motivo**")
+        _detalle_mod_nc = (
+            _df_mod_nc.groupby(["nombre", "motivo"])
+            .agg(permisos=("fecha_str", "count"), horas=("hs_real", "sum"))
+            .reset_index()
+            .sort_values("horas", ascending=False)
+        )
+        _detalle_mod_nc["horas"] = _detalle_mod_nc["horas"].apply(fmt_horas)
+        _detalle_mod_nc.columns = ["Nombre", "Motivo", "Permisos", "Horas"]
+        st.dataframe(_detalle_mod_nc, use_container_width=True, hide_index=True)
+
+        st.caption(
+            f"Datos de {MESES[_mod_mes]} {_mod_año}. Solo HOURLY DIRECT de Costura con compensa=NO. "
+            "Este tiempo no se recupera — impacta directo en producción y es insumo para evaluar prima."
+        )
+
     # ── 6. (OPCIONAL) Tiempo no productivo acumulado por mes ──
     st.divider()
     st.subheader("⏳ Tiempo no productivo acumulado")
@@ -1757,3 +1975,167 @@ elif pagina == "📊 Análisis":
             f"Quedan **{pendiente_total:.0f}h** sin recuperar."
             if total_comprometido > 0 else "Sin datos suficientes."
         )
+
+
+# ═══════════════════════════════════════════════════════════════
+# CÓMO SE CALCULA — Documentación interna de fórmulas
+# ═══════════════════════════════════════════════════════════════
+elif pagina == "📖 Cómo se calcula":
+
+    st.title("📖 Cómo se calcula todo en esta app")
+    st.caption(
+        "Documentación de referencia para entender la lógica de cálculo. "
+        "Cualquier persona nueva en el equipo puede leer esto antes de tocar datos."
+    )
+    st.divider()
+
+    # ── 1. Redondeo de horas ──────────────────────────────────
+    with st.expander("⏱ 1. Redondeo de horas — regla de fábrica", expanded=False):
+        st.markdown("""
+Toda ausencia parcial se convierte a horas enteras con esta regla:
+
+| Minutos reales | Horas redondeadas |
+|---|---|
+| < 30 min | 0 horas |
+| 30 – 89 min | 1 hora |
+| 90 – 149 min | 2 horas |
+| 150 – 209 min | 3 horas |
+
+**Regla general:** si la fracción sobre la hora entera es ≥ 30 minutos, sube al entero siguiente.
+        """)
+        st.markdown("**Ejemplos reales:**")
+        ej_df = pd.DataFrame({
+            "Salida": ["09:50", "09:00", "08:00", "11:00"],
+            "Entrada": ["10:40", "10:45", "09:10", "13:24"],
+            "Tiempo real": ["50 min", "1h 45min", "1h 10min", "2h 24min"],
+            "Horas redondeadas": ["1 hora", "2 horas", "1 hora", "2 horas"],
+        })
+        st.dataframe(ej_df, use_container_width=True, hide_index=True)
+
+        st.markdown("**Sin retorno (S/R):** se calcula contra el fin de turno (15:00 hs), no contra el final del día.")
+        st.code("Minutos ausentes = (15:00 - hora_salida) en minutos\nEjemplo: salida 10:00 → 300 min → 5 horas", language="text")
+
+    # ── 2. Saldo pendiente ────────────────────────────────────
+    with st.expander("💰 2. Cálculo de saldo pendiente por persona", expanded=False):
+        st.markdown("""
+El saldo es **acumulativo** — no se resetea por mes. Una persona puede deber horas
+de febrero y compensarlas en mayo. Eso es correcto y esperado.
+        """)
+        st.code(
+            "Debe_total   = Σ horas_redondeadas  (donde compensa = 'SI')\n"
+            "Ya_compensó  = Σ horas_compensadas  (todas las fechas registradas)\n"
+            "Saldo_actual = Debe_total − Ya_compensó",
+            language="text"
+        )
+        st.caption("Si saldo_actual ≤ 0, la persona NO aparece en el reporte. No hay saldo negativo.")
+
+    # ── 3. Tope anual ──────────────────────────────────────────
+    with st.expander("🚦 3. Tope anual de compensación", expanded=False):
+        st.markdown(f"""
+Cada empleada tiene un límite anual de horas que puede comprometer para compensar.
+Al alcanzar ese límite, el sistema **no permite** marcar nuevos permisos como
+`compensa=SI` — los fuerza automáticamente a `NO`.
+        """)
+        st.code(
+            f"Tope_anual = {TOPE_HORAS_NORMAL}h   (empleada normal)\n"
+            f"Tope_anual = {TOPE_HORAS_LIDER}h  (líderes)\n\n"
+            "Consumido_año = Σ horas_redondeadas donde:\n"
+            "  • compensa = 'SI'\n"
+            "  • año(fecha) = año calendario actual\n\n"
+            "Disponible = MAX(0, Tope_anual − Consumido_año)\n"
+            "Excedente  = MAX(0, Consumido_año − Tope_anual)",
+            language="text"
+        )
+        st.caption("Año calendario: resetea el 1° de enero de cada año.")
+
+        st.markdown("**Semáforo de estado:**")
+        semaforo_df = pd.DataFrame({
+            "Estado": ["🟢 OK", "🟡 ATENCIÓN", "🔴 LÍMITE", "🔴 EXCEDE TOPE"],
+            "Condición": [
+                "Disponible > 2h",
+                "Disponible ≤ 2h",
+                "Consumido = Tope",
+                "Consumido > Tope",
+            ],
+            "Consecuencia": [
+                "Puede seguir compensando con normalidad",
+                "Próximo permiso puede cerrar el tope",
+                "No puede sumar más compensa=SI",
+                "Nuevos permisos: NO automático",
+            ],
+        })
+        st.dataframe(semaforo_df, use_container_width=True, hide_index=True)
+
+        st.markdown("**Líderes con tope de 16h/año (nombres exactos del padrón):**")
+        for lider in sorted(LIDERES_SJ):
+            st.markdown(f"- {lider}")
+
+    # ── 4. Política de motivos ─────────────────────────────────
+    with st.expander("📋 4. Política de motivos — qué puede compensar y qué no", expanded=False):
+        st.markdown("**Fábrica San Juan (RR.HH. 020):**")
+        sj_si = pd.DataFrame({"Motivo": sorted(MOTIVOS_COMPENSAN_SJ)})
+        sj_si["¿Puede compensar?"] = "✅ SÍ — guardia elige SI/NO"
+        st.dataframe(sj_si, use_container_width=True, hide_index=True)
+
+        sj_no = [m for m in MOTIVOS_LISTA if m not in MOTIVOS_COMPENSAN_SJ]
+        sj_no_df = pd.DataFrame({"Motivo": sj_no})
+        sj_no_df["¿Puede compensar?"] = "❌ NO — sistema fuerza NO"
+        st.dataframe(sj_no_df, use_container_width=True, hide_index=True)
+
+        st.warning(
+            "⚠️ **'Médico turno mañana'** SÍ puede compensar. **'Médico propio'** "
+            "(sin especificar turno) NO puede compensar. Es una distinción de política, no del sistema."
+        )
+
+        st.markdown("**Casa Central Bs. As. (convenio 036):**")
+        bsas_si = pd.DataFrame({"Motivo": sorted(MOTIVOS_COMPENSAN_BSAS)})
+        bsas_si["¿Puede compensar?"] = "✅ SÍ — guardia elige SI/NO"
+        st.dataframe(bsas_si, use_container_width=True, hide_index=True)
+
+    # ── 5. Cómo leer el reporte de gerencia ────────────────────
+    with st.expander("📄 5. Cómo leer el reporte para gerencia", expanded=False):
+        reporte_cols_df = pd.DataFrame({
+            "Columna": ["Apellido y Nombre", "Clasificación", "Base anual", "Pendiente",
+                       "Consumido año", "Disponible", "Estado"],
+            "Qué significa": [
+                "Empleada. Las líderes tienen 👑 al lado.",
+                "Categoría laboral: HOURLY DIRECT, HOURLY INDIRECT, EXEMPT, NON EXEMPT.",
+                "Tope máximo anual: 8h normal, 16h líder.",
+                "Horas que todavía debe compensar (acumuladas, todas las fechas).",
+                "Horas con compensa=SI en el año calendario actual. Resetea 1° de enero.",
+                "Cuánto le queda disponible = Base anual − Consumido año (mínimo 0).",
+                "Semáforo según el tope (ver sección 3).",
+            ],
+        })
+        st.dataframe(reporte_cols_df, use_container_width=True, hide_index=True)
+        st.error(
+            "⚠️ **Importante:** el reporte SOLO debe generarse con el botón "
+            "'Descargar PNG' o 'Descargar Excel'. No copiar datos a mano a otra planilla — "
+            "eso fue lo que causó la omisión de personas en un reporte anterior."
+        )
+
+    # ── 6. MOD y tiempo no productivo ──────────────────────────
+    with st.expander("🔧 6. Métricas de producción (MOD)", expanded=False):
+        st.markdown("""
+**Horas no trabajadas MOD:** todos los permisos de empleados `HOURLY DIRECT` del
+sector `COSTURA`, sin importar si compensan o no. Mide tiempo físico fuera de la
+línea de producción — usa `minutos_reales` sin redondeo.
+
+**Horas MOD sin compensar:** el mismo filtro de MOD (HOURLY DIRECT + Costura) pero
+solo donde `compensa = NO`. Es tiempo de producción que **no se recupera nunca** —
+insumo directo para evaluar prima de producción.
+
+**Tiempo no productivo acumulado:** horas comprometidas a compensar (`compensa=SI`)
+de toda la planta, agrupadas por mes de origen, comparadas contra lo ya recuperado.
+No está limitado a MOD — es la foto general de deuda de horas de toda la dotación.
+        """)
+        st.info(
+            "Estas tres métricas son independientes entre sí. Ninguna combina "
+            "automáticamente 'MOD' + 'compensa' salvo donde el título lo dice explícitamente."
+        )
+
+    st.divider()
+    st.caption(
+        "Esta documentación vive dentro del código (app.py) y se actualiza junto con la lógica. "
+        "Si una fórmula cambia acá, debe reflejarse también en esta página."
+    )
