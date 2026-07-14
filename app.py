@@ -56,10 +56,13 @@ MOTIVOS_LISTA = [
     "Juzgado / Tribunales",
     "Registro Civil / DNI",
     "Escribanía",
+    "Renovación Carnet de Conducir",
     "Carnet de Conducir",
     "Análisis de sangre",
     "Colegio hijo/a",
     "Escuela hijo/a",
+    "Promesa Bandera Primaria Hijo",
+    "Adaptación Jardín / 2do Grado Hijo",
     "Cuidado familiar",
     "Trámite personal",
     "Duelo / Fallecimiento familiar",
@@ -67,21 +70,39 @@ MOTIVOS_LISTA = [
     "Otro",
 ]
 
+# Motivos con cupo EXTRA de 4h anuales que NO cuentan contra el tope de 8/16h.
+# Estos 3 motivos siempre pueden compensar aunque la persona haya agotado su tope normal.
+MOTIVOS_FUERA_TOPE = {
+    "Promesa Bandera Primaria Hijo",
+    "Renovación Carnet de Conducir",
+    "Adaptación Jardín / 2do Grado Hijo",
+}
+TOPE_EXTRA_FUERA_TOPE = 4   # horas anuales de cupo extra por estos motivos
+
 # Política San Juan (RR.HH. 020): motivos que PERMITEN compensar
 # Para estos el guardia puede elegir SI o NO.
 # Para los demás se fuerza NO automáticamente.
 MOTIVOS_COMPENSAN_SJ = {
     "Banco / Cajero",
     "Análisis de sangre",
-    "Carnet de Conducir",
+    "Renovación Carnet de Conducir",  # carnet de conducir solo RENOVACIÓN compensa
     "Registro Civil / DNI",
     "Obra social / ANSES",
-    "Juzgado / Tribunales",   # política modificada — sí compensa
+    "Juzgado / Tribunales",
     "Escribanía",
-    "Trámite personal",
     "Colegio hijo/a",
-    "Médico turno mañana",    # nuevo: turno mañana sí compensa en SJ
-    "Otro",                   # queda a criterio
+    "Médico turno mañana",            # turno mañana sí compensa en SJ
+    "Promesa Bandera Primaria Hijo",  # fuera de tope (cupo extra 4h)
+    "Adaptación Jardín / 2do Grado Hijo",  # fuera de tope (cupo extra 4h)
+    "Otro",
+}
+# "Trámite personal" removido — NO compensa (política actualizada)
+# "Carnet de Conducir" removido — solo RENOVACIÓN compensa
+
+# Motivos que SÍ compensan para líderes y personal de Calidad
+# (beneficio adicional sobre el resto del plantel)
+MOTIVOS_COMPENSAN_LIDERES_SJ = MOTIVOS_COMPENSAN_SJ | {
+    "Médico propio",      # líderes y calidad: médico propio sí compensa
 }
 
 # Política Buenos Aires (RR.HH. 036 — convenio): motivos que PERMITEN compensar
@@ -142,6 +163,14 @@ MOTIVO_MAP = {
     "1 dia de clases":           "Colegio hijo/a",
     "colegio":                   "Colegio hijo/a",
     "fallecimiento familiar":    "Duelo / Fallecimiento familiar",
+    "promesa bandera":           "Promesa Bandera Primaria Hijo",
+    "juramento bandera":         "Promesa Bandera Primaria Hijo",
+    "promesa":                   "Promesa Bandera Primaria Hijo",
+    "adaptacion jardin":         "Adaptación Jardín / 2do Grado Hijo",
+    "adaptación jardín":         "Adaptación Jardín / 2do Grado Hijo",
+    "renovacion carnet":         "Renovación Carnet de Conducir",
+    "renovación carnet":         "Renovación Carnet de Conducir",
+    "tramite personal":          "Trámite personal",
 }
 
 MESES = {
@@ -329,14 +358,31 @@ def obtener_tope(es_lider: str) -> float:
 def horas_comprometidas_año(permisos_df: pd.DataFrame, legajo: str, año: int) -> float:
     """
     Suma las horas con compensa=SI que una persona ya tiene cargadas
-    en el año calendario indicado. Año calendario = resetea 1° de enero.
+    en el año calendario indicado. Excluye motivos FUERA_TOPE del conteo.
     """
     if permisos_df.empty:
         return 0.0
     p = permisos_df[
         (permisos_df["legajo"] == legajo) &
         (permisos_df["compensa"] == "SI") &
-        (permisos_df["fecha"].dt.year == año)
+        (permisos_df["fecha"].dt.year == año) &
+        (~permisos_df["motivo"].isin(MOTIVOS_FUERA_TOPE))
+    ]
+    return float(p["horas_redondeadas"].sum()) if not p.empty else 0.0
+
+
+def horas_fuera_tope_año(permisos_df: pd.DataFrame, legajo: str, año: int) -> float:
+    """
+    Suma las horas usadas del cupo extra (motivos FUERA_TOPE) para una persona
+    en el año calendario. Tope independiente de 4h anuales.
+    """
+    if permisos_df.empty:
+        return 0.0
+    p = permisos_df[
+        (permisos_df["legajo"] == legajo) &
+        (permisos_df["compensa"] == "SI") &
+        (permisos_df["fecha"].dt.year == año) &
+        (permisos_df["motivo"].isin(MOTIVOS_FUERA_TOPE))
     ]
     return float(p["horas_redondeadas"].sum()) if not p.empty else 0.0
 
@@ -516,8 +562,14 @@ if pagina == "🔵 Panel Guardia":
         sin_retorno_pre = st.checkbox("🔴 Sin retorno (no volvió)", value=False, key="sr_pre")
 
     # Política SJ: determinar si el motivo permite compensar
+    # Líderes y personal de Calidad tienen un set más amplio de motivos
     if ES_SJ:
-        puede_compensar = motivo_sel in MOTIVOS_COMPENSAN_SJ
+        _es_lider_motivo = False
+        if legajo_resuelto:
+            _lider_check = padron_activos[padron_activos["legajo"] == legajo_resuelto]["es_lider"].values
+            _es_lider_motivo = len(_lider_check) > 0 and str(_lider_check[0]).upper() == "SI"
+        _set_politica = MOTIVOS_COMPENSAN_LIDERES_SJ if _es_lider_motivo else MOTIVOS_COMPENSAN_SJ
+        puede_compensar = motivo_sel in _set_politica
         if not puede_compensar:
             st.info(
                 f"ℹ️ El motivo **{motivo_sel}** no está contemplado en la política de compensación "
@@ -535,30 +587,46 @@ if pagina == "🔵 Panel Guardia":
         puede_compensar = True
 
     # ── TOPE ANUAL — chequeo antes de habilitar el radio SI/NO ──
-    # Si la persona ya alcanzó su tope de horas a compensar en el año
-    # calendario actual, se fuerza NO sin importar lo que diga la política
-    # de motivos. El guardia no puede elegir SI en ese caso.
+    # Excepción: si el motivo es de tipo FUERA_TOPE (cupo extra 4h anual),
+    # NO se aplica el bloqueo del tope normal — siempre puede compensar.
     tope_alcanzado = False
+    es_motivo_fuera_tope = motivo_sel in MOTIVOS_FUERA_TOPE
+
     if legajo_resuelto and ES_SJ:
         _es_lider_sel = padron_activos[padron_activos["legajo"] == legajo_resuelto]["es_lider"].values
         _es_lider_sel = _es_lider_sel[0] if len(_es_lider_sel) > 0 else "NO"
         _tope_sel = obtener_tope(_es_lider_sel)
         _año_actual = date.today().year
         _comprometidas_sel = horas_comprometidas_año(permisos_activos, legajo_resuelto, _año_actual)
+        # Horas ya usadas de cupo fuera de tope en el año
+        _fuera_tope_usadas = horas_fuera_tope_año(permisos_activos, legajo_resuelto, _año_actual)
 
-        st.caption(
-            f"📊 Tope anual {_año_actual}: **{_comprometidas_sel:.1f}h / {_tope_sel:.0f}h** "
-            f"{'(líder)' if _es_lider_sel == 'SI' else ''}"
-        )
-
-        if _comprometidas_sel >= _tope_sel:
-            tope_alcanzado = True
-            puede_compensar = False
-            st.warning(
-                f"⚠️ **{nombre_resuelto}** ya alcanzó el tope anual de {_tope_sel:.0f}h para compensar "
-                f"en {_año_actual} (lleva {_comprometidas_sel:.1f}h). Este permiso se registrará como "
-                "**No compensa** automáticamente, sin importar el motivo."
+        if es_motivo_fuera_tope:
+            _disponible_extra = max(0, TOPE_EXTRA_FUERA_TOPE - _fuera_tope_usadas)
+            if _disponible_extra > 0:
+                st.caption(
+                    f"⭐ Motivo con cupo extra: **{_fuera_tope_usadas:.1f}h / {TOPE_EXTRA_FUERA_TOPE}h** "
+                    f"usadas del cupo especial de 4h anuales."
+                )
+            else:
+                tope_alcanzado = True
+                puede_compensar = False
+                st.warning(
+                    f"⚠️ **{nombre_resuelto}** ya usó las {TOPE_EXTRA_FUERA_TOPE}h del cupo especial "
+                    f"para este tipo de motivo en {_año_actual}. No compensa automáticamente."
+                )
+        else:
+            st.caption(
+                f"📊 Tope anual {_año_actual}: **{_comprometidas_sel:.1f}h / {_tope_sel:.0f}h** "
+                f"{'(líder)' if _es_lider_sel == 'SI' else ''}"
             )
+            if _comprometidas_sel >= _tope_sel:
+                tope_alcanzado = True
+                puede_compensar = False
+                st.warning(
+                    f"⚠️ **{nombre_resuelto}** ya alcanzó el tope anual de {_tope_sel:.0f}h "
+                    f"en {_año_actual} (lleva {_comprometidas_sel:.1f}h). No compensa automáticamente."
+                )
 
     # Radio compensa — FUERA del form para reactividad con el motivo
     if puede_compensar:
@@ -983,11 +1051,14 @@ elif pagina == "🟢 Panel RRHH":
             f"**{len(rep)} personas** — **{total_hs:.0f}h** pendientes al cierre de {MESES[mes_sel]}. "
         )
         if n_excedentes > 0:
-            st.error(
-                f"🔴 **{n_excedentes} persona/s** superaron el tope anual de compensación. "
-                "Las horas excedentes no pueden registrarse como compensa=SI a partir de ahora "
-                "— el sistema las fuerza a No compensa automáticamente."
-            )
+            _excedentes_df = rep[rep["excedente"] > 0][["nombre", "excedente", "base_anual"]].copy()
+            for _, _exc_row in _excedentes_df.iterrows():
+                st.error(
+                    f"🔴 {_exc_row['nombre']} — excede el tope de "
+                    f"{fmt_horas(_exc_row['base_anual'])} anuales en "
+                    f"{fmt_horas(_exc_row['excedente'])}. "
+                    f"Horas a descontar directamente del jornal: {fmt_horas(_exc_row['excedente'])}."
+                )
 
         # Botón de descarga PNG — renderiza la tabla completa como imagen
         _png_rep = rep[["nombre","sector","clasificacion","base_anual","saldo",
@@ -1328,6 +1399,35 @@ elif pagina == "🟢 Panel RRHH":
         except Exception:
             pass
 
+    # ── Indicador mensual de compensación ──────────────────────
+    st.divider()
+    st.subheader("📈 Indicador de compensación por mes")
+    st.caption(
+        "Porcentaje de horas comprometidas que se compensaron efectivamente cada mes. "
+        "Permite seguir la tendencia del equipo en recuperar horas."
+    )
+    if not permisos_activos.empty and not comp_activos.empty:
+        _df_ind = permisos_activos[permisos_activos["compensa"] == "SI"].copy()
+        _df_ind["mes_label"] = _df_ind["fecha"].dt.to_period("M").astype(str)
+        _por_mes = _df_ind.groupby("mes_label")["horas_redondeadas"].sum().reset_index()
+        _por_mes.columns = ["Mes", "Hs. comprometidas"]
+        _comp_ind = comp_activos.copy()
+        _comp_ind["mes_label"] = _comp_ind["fecha_compensacion"].dt.to_period("M").astype(str)
+        _comp_mes = _comp_ind.groupby("mes_label")["horas_compensadas"].sum().reset_index()
+        _comp_mes.columns = ["Mes", "Hs. compensadas"]
+        _ind = _por_mes.merge(_comp_mes, on="Mes", how="left")
+        _ind["Hs. compensadas"] = _ind["Hs. compensadas"].fillna(0)
+        _ind["% Cumplimiento"] = (
+            (_ind["Hs. compensadas"] / _ind["Hs. comprometidas"] * 100)
+            .clip(upper=100).round(1)
+        )
+        _ind["Hs. comprometidas"] = _ind["Hs. comprometidas"].apply(fmt_horas)
+        _ind["Hs. compensadas"]   = _ind["Hs. compensadas"].apply(fmt_horas)
+        _ind["% Cumplimiento"]    = _ind["% Cumplimiento"].apply(lambda x: f"{x:.1f}%")
+        st.dataframe(_ind, use_container_width=True, hide_index=True)
+    else:
+        st.info("No hay suficientes datos para calcular el indicador.")
+
     # ── Saldo actual (a hoy) ────────────────────────────────────
     st.divider()
     st.subheader("📊 Saldo acumulado actual (a hoy)")
@@ -1394,6 +1494,86 @@ elif pagina == "🟢 Panel RRHH":
             _hc.columns = ["Fecha compensó","Horas","Observación","Registrado por"]
             st.dataframe(_hc.sort_values("Fecha compensó"), use_container_width=True, hide_index=True)
 
+    # ── Edición / anulación de registros ───────────────────────
+    st.divider()
+    st.subheader("🛠️ Corregir o anular un permiso")
+    st.caption(
+        "Buscá un permiso cargado por error y marcalo como anulado. "
+        "No se borra — queda en el historial con la razón del cambio. "
+        "Usar solo cuando el guardia cargó mal un dato."
+    )
+    with st.expander("Abrir corrector de registros"):
+        _edit_nombre = st.selectbox("Empleado/a", ["— Seleccioná —"] + nombres_lista, key="edit_nombre")
+        if _edit_nombre and _edit_nombre != "— Seleccioná —":
+            _leg_edit = nombre_a_legajo.get(_edit_nombre, "")
+            _perms_edit = permisos_activos[permisos_activos["legajo"] == _leg_edit].copy()                 if not permisos_activos.empty else pd.DataFrame()
+            if not _perms_edit.empty:
+                _perms_edit["_label"] = (
+                    _perms_edit["fecha"].dt.strftime("%d/%m/%Y") + " | " +
+                    _perms_edit["motivo"] + " | " +
+                    _perms_edit["compensa"] + " | " +
+                    _perms_edit["horas_redondeadas"].apply(fmt_horas)
+                )
+                _reg_sel = st.selectbox(
+                    "Seleccioná el registro a corregir",
+                    ["— Seleccioná —"] + _perms_edit["_label"].tolist(),
+                    key="edit_reg"
+                )
+                if _reg_sel and _reg_sel != "— Seleccioná —":
+                    _idx_sel = _perms_edit[_perms_edit["_label"] == _reg_sel].index[0]
+                    _id_sel  = _perms_edit.loc[_idx_sel, "id"]
+                    st.info(f"Registro seleccionado: **{_reg_sel}** (ID: {_id_sel})")
+                    _accion = st.radio(
+                        "¿Qué querés hacer?",
+                        ["Cambiar compensa=SI a NO", "Cambiar compensa=NO a SI", "Anular registro"],
+                        horizontal=True,
+                        key="edit_accion"
+                    )
+                    _razon = st.text_input(
+                        "Razón del cambio * (queda registrado en el historial)",
+                        placeholder="Ej: el guardia cargó el motivo equivocado",
+                        key="edit_razon"
+                    )
+                    _edit_quien = st.text_input("Tu nombre *", key="edit_quien")
+                    if st.button("Aplicar corrección", type="primary", key="btn_edit"):
+                        if not _razon.strip():
+                            st.error("❌ La razón del cambio es obligatoria.")
+                        elif not _edit_quien.strip():
+                            st.error("❌ Falta tu nombre.")
+                        else:
+                            try:
+                                ws_p = get_wb(gc).worksheet("permisos")
+                                # Encontrar fila en Sheets buscando el ID
+                                _cell = ws_p.find(_id_sel)
+                                if _cell:
+                                    _row_g = _cell.row
+                                    # Columnas según schema: id(1) fecha(2) legajo(3) nombre(4)
+                                    # hora_sal(5) hora_ent(6) sin_retorno(7) motivo(8)
+                                    # compensa(9) minutos(10) horas(11) registrado_por(12)
+                                    # planta(13) timestamp(14)
+                                    if _accion == "Anular registro":
+                                        ws_p.update_cell(_row_g, 9, "ANULADO")
+                                        ws_p.update_cell(_row_g, 11, "0")
+                                        ws_p.update_cell(_row_g, 12,
+                                            f"ANULADO por {_edit_quien.strip()} — {_razon.strip()} — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                                    elif _accion == "Cambiar compensa=SI a NO":
+                                        ws_p.update_cell(_row_g, 9, "NO")
+                                        ws_p.update_cell(_row_g, 11, "0")
+                                        ws_p.update_cell(_row_g, 12,
+                                            f"Cambiado SI→NO por {_edit_quien.strip()} — {_razon.strip()} — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                                    elif _accion == "Cambiar compensa=NO a SI":
+                                        ws_p.update_cell(_row_g, 9, "SI")
+                                        ws_p.update_cell(_row_g, 12,
+                                            f"Cambiado NO→SI por {_edit_quien.strip()} — {_razon.strip()} — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                                    leer_permisos.clear()
+                                    st.success(f"✅ Corrección aplicada. Razón guardada: '{_razon.strip()}'")
+                                else:
+                                    st.error("❌ No se encontró el registro en Sheets. Recargá la página.")
+                            except Exception as _edit_err:
+                                st.error(f"❌ Error: {_edit_err}")
+            else:
+                st.info("Esta persona no tiene permisos registrados.")
+
     # ── Registrar compensación ──
     st.divider()
     st.subheader("✏️ Registrar compensación")
@@ -1416,7 +1596,7 @@ elif pagina == "🟢 Panel RRHH":
 
         cc3, cc4 = st.columns(2)
         with cc3:
-            fecha_comp = st.date_input("Fecha en que compensó", value=date.today(), format="DD/MM/YYYY")
+            fecha_comp = st.date_input("Fecha en que compensó", value=date.today(), max_value=date.today(), format="DD/MM/YYYY")
         with cc4:
             hs_comp = st.number_input("Horas compensadas", min_value=0.5, max_value=8.0, value=1.0, step=0.5)
 
