@@ -57,7 +57,6 @@ MOTIVOS_LISTA = [
     "Registro Civil / DNI",
     "Escribanía",
     "Renovación Carnet de Conducir",
-    "Carnet de Conducir",
     "Análisis de sangre",
     "Colegio hijo/a",
     "Escuela hijo/a",
@@ -85,7 +84,7 @@ TOPE_EXTRA_FUERA_TOPE = 4   # horas anuales de cupo extra por estos motivos
 MOTIVOS_COMPENSAN_SJ = {
     "Banco / Cajero",
     "Análisis de sangre",
-    "Renovación Carnet de Conducir",  # carnet de conducir solo RENOVACIÓN compensa
+    "Renovación Carnet de Conducir",  # con cupo extra de 4h anuales fuera del tope normal
     "Registro Civil / DNI",
     "Obra social / ANSES",
     "Juzgado / Tribunales",
@@ -97,7 +96,6 @@ MOTIVOS_COMPENSAN_SJ = {
     "Otro",
 }
 # "Trámite personal" removido — NO compensa (política actualizada)
-# "Carnet de Conducir" removido — solo RENOVACIÓN compensa
 
 # Motivos que SÍ compensan para líderes y personal de Calidad
 # (beneficio adicional sobre el resto del plantel)
@@ -148,10 +146,10 @@ MOTIVO_MAP = {
     "declarar estafa":           "Juzgado / Tribunales",
     "registro civil":            "Registro Civil / DNI",
     "dni":                       "Registro Civil / DNI",
-    "carnet de conducir":        "Carnet de Conducir",
+    "carnet de conducir":        "Renovación Carnet de Conducir",
     "escribania":                "Escribanía",
     "escribanía":                "Escribanía",
-    "emicar":                    "Carnet de Conducir",
+    "emicar":                    "Emicar / Clínica",
     "sanatorio sj":              "Enfermedad propia / Clínica",
     "clinica":                   "Enfermedad propia / Clínica",
     "clínica":                   "Enfermedad propia / Clínica",
@@ -1646,10 +1644,22 @@ elif pagina == "🟢 Panel RRHH":
     if not p_f.empty:
         det = p_f[[
             "fecha", "legajo", "nombre", "hora_salida", "hora_entrada",
-            "sin_retorno", "motivo", "compensa", "horas_redondeadas"
+            "sin_retorno", "motivo", "compensa", "horas_redondeadas", "minutos_reales"
         ]].copy()
         det["fecha"] = det["fecha"].dt.strftime("%d/%m/%Y")
-        det.columns = ["Fecha", "Legajo", "Nombre", "Salida", "Entrada", "S/R", "Motivo", "Compensa", "Hs."]
+        # Minutos formateado: mostrar como entero si no tiene decimales relevantes
+        det["minutos_reales"] = det["minutos_reales"].apply(
+            lambda m: f"{int(m)} min" if pd.notna(m) and m > 0 else "—"
+        )
+        det.columns = [
+            "Fecha", "Legajo", "Nombre", "Salida", "Entrada",
+            "S/R", "Motivo", "Compensa", "Hs. (redondeadas)", "Minutos reales"
+        ]
+        st.caption(
+            "⚠️ Revisá la columna **Minutos reales** si sospechás que el redondeo no fue correcto. "
+            "Ejemplo: 270 min = 4.5h exactas → el sistema redondea a 5h. "
+            "Si hubo un error, corregilo desde 'Corregir o anular un permiso' arriba."
+        )
         st.dataframe(det, use_container_width=True, hide_index=True)
     else:
         st.info("No hay permisos en este período.")
@@ -2261,8 +2271,22 @@ Al alcanzar ese límite, el sistema **no permite** marcar nuevos permisos como
     with st.expander("📋 4. Política de motivos — qué puede compensar y qué no", expanded=False):
         st.markdown("**Fábrica San Juan (RR.HH. 020):**")
         sj_si = pd.DataFrame({"Motivo": sorted(MOTIVOS_COMPENSAN_SJ)})
-        sj_si["¿Puede compensar?"] = "✅ SÍ — guardia elige SI/NO"
+        sj_si["¿Puede compensar?"] = sj_si["Motivo"].apply(
+            lambda m: "✅ SÍ + cupo extra 4h/año (fuera de tope normal)" if m in MOTIVOS_FUERA_TOPE
+            else "✅ SÍ — guardia elige SI/NO"
+        )
         st.dataframe(sj_si, use_container_width=True, hide_index=True)
+
+        st.markdown("**Motivos con cupo extra de 4h anuales (fuera del tope de 8/16h):**")
+        _fuera_lista = ", ".join(sorted(MOTIVOS_FUERA_TOPE))
+        st.info(
+            "Los siguientes motivos tienen un cupo independiente de 4 horas anuales "
+            "que NO descuentan del tope normal (8h o 16h para líderes). "
+            "Una persona que ya agoto su tope puede seguir compensando por estos motivos "
+            "hasta consumir las 4h extra del cupo especial: " + _fuera_lista + ". "
+            "Renovacion Carnet de Conducir es un unico motivo que engloba cualquier "
+            "variante de carnet de conducir. Requiere turno manana."
+        )
 
         sj_no = [m for m in MOTIVOS_LISTA if m not in MOTIVOS_COMPENSAN_SJ]
         sj_no_df = pd.DataFrame({"Motivo": sj_no})
