@@ -28,7 +28,11 @@ AÑOS = list(range(2025, 2036))
 # ── Topes anuales de compensación ─────────────────────────────
 TOPE_HORAS_NORMAL     = 8
 TOPE_HORAS_LIDER      = 16
-TOPE_EXTRA_FUERA_TOPE = 4    # cupo extra para motivos especiales
+TOPE_EXTRA_FUERA_TOPE = 4    # cupo extra para motivos especiales (solo San Juan)
+
+# ── Bs. As. — política RR.HH. 036 (NO aplica a San Juan) ───────
+TOPE_HORAS_BSAS            = 10   # tope anual, sin distinción de líder
+TOPE_HORAS_POR_PERMISO_BSAS = 4   # máximo de horas compensables por permiso individual
 
 # ── Líderes SJ ────────────────────────────────────────────────
 # Nombres exactos del padrón. Sincronizar si cambia el padrón.
@@ -64,6 +68,11 @@ MOTIVOS_LISTA = [
     "Duelo / Fallecimiento familiar",
     "ART",
     "Otro",
+    # ── Agregados política Bs. As. 036 ──
+    "Jardín",
+    "Trámite Automotor",
+    "Paro General",   # agregado como compensable por decisión de RRHH,
+                       # aunque no figura textualmente en la política 036.
 ]
 
 # Cupo extra de 4h/año FUERA del tope normal. Solo estos 3 motivos.
@@ -105,6 +114,11 @@ MOTIVOS_COMPENSAN_BSAS = {
     "Escuela hijo/a",
     "Colegio hijo/a",
     "Otro",
+    "Jardín",              # "Primer día de clases... jardín" — política 036
+    "Trámite Automotor",   # "Registro Civil/Automotor" — política 036
+    "Paro General",        # No está en la política 036 escrita — se agregó
+                            # como compensable por decisión de RRHH (confirmado
+                            # verbalmente). Si esto se revierte, sacar esta línea.
 }
 
 # Mapeo para normalizar motivos históricos escritos a mano

@@ -13,12 +13,13 @@ from config import (
     MOTIVOS_LISTA, MOTIVOS_FUERA_TOPE, TOPE_EXTRA_FUERA_TOPE,
     MOTIVOS_COMPENSAN_SJ, MOTIVOS_COMPENSAN_LIDERES_SJ,
     MOTIVOS_COMPENSAN_BSAS, HORA_FIN_TURNO,
+    TOPE_HORAS_POR_PERMISO_BSAS,
 )
 from services.permisos_service import (
     redondear_horas, minutos_entre, fmt_dur, fmt_horas,
     generar_id, validar_permiso, obtener_tope,
     horas_comprometidas_año, horas_fuera_tope_año,
-    puede_compensar_por_politica,
+    puede_compensar_por_politica, excede_tope_por_permiso,
 )
 from repositories.sheets_repo import (
     guardar_permiso, agregar_empleado,
@@ -155,6 +156,23 @@ def render(
                     f"({_consumi:.1f}h acumuladas). Se registra como No compensa."
                 )
 
+    elif legajo_resuelto and key_planta == "Casa Central":
+        # Política 036 — no distingue líder, tope fijo de 10h/año.
+        año_actual = date.today().year
+        _tope    = obtener_tope("NO", key_planta)
+        _consumi = horas_comprometidas_año(permisos_activos, legajo_resuelto, año_actual)
+        st.caption(
+            f"📊 Tope {año_actual}: **{_consumi:.1f}h / {_tope:.0f}h** — política Bs. As. (036)"
+        )
+        st.caption(f"⚠️ Máximo por permiso individual: **{TOPE_HORAS_POR_PERMISO_BSAS}h**")
+        if _consumi >= _tope:
+            tope_alcanzado  = True
+            puede_compensar = False
+            st.warning(
+                f"⚠️ **{nombre_resuelto}** alcanzó el tope de {_tope:.0f}h en {año_actual} "
+                f"({_consumi:.1f}h acumuladas). Se registra como No compensa."
+            )
+
     # Radio compensa — fuera del form para reactividad
     if puede_compensar:
         compensa_pre = st.radio(
@@ -206,19 +224,28 @@ def render(
             if not nombre_resuelto:
                 errores.insert(0, "Seleccioná o buscá a la persona primero.")
 
+            # Calcular horas ANTES de validar, para poder chequear el
+            # tope por permiso individual de Bs. As. (política 036).
+            if sin_retorno_pre:
+                mins_r  = minutos_entre(hora_salida_pre, HORA_FIN_TURNO)
+                hrs_r   = redondear_horas(mins_r) if compensa_pre == "SI" else 0.0
+                ent_str = "S/R"
+            else:
+                mins_r  = minutos_entre(hora_salida_pre, hora_entrada)
+                hrs_r   = redondear_horas(mins_r)
+                ent_str = hora_entrada.strftime("%H:%M")
+
+            if compensa_pre == "SI" and excede_tope_por_permiso(hrs_r, key_planta):
+                errores.append(
+                    f"Este permiso equivale a {fmt_horas(hrs_r)}, supera el máximo de "
+                    f"{TOPE_HORAS_POR_PERMISO_BSAS}h por permiso individual "
+                    "(política Bs. As. 036). Dividí el trámite o marcá 'No compensa'."
+                )
+
             if errores:
                 for e in errores:
                     st.error(f"❌ {e}")
             else:
-                if sin_retorno_pre:
-                    mins_r  = minutos_entre(hora_salida_pre, HORA_FIN_TURNO)
-                    hrs_r   = redondear_horas(mins_r) if compensa_pre == "SI" else 0.0
-                    ent_str = "S/R"
-                else:
-                    mins_r  = minutos_entre(hora_salida_pre, hora_entrada)
-                    hrs_r   = redondear_horas(mins_r)
-                    ent_str = hora_entrada.strftime("%H:%M")
-
                 try:
                     guardar_permiso(gc, {
                         "id":               generar_id("P"),

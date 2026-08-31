@@ -47,6 +47,7 @@ def render(
     nombres_lista: list,
     sector_dict: dict,
     clasif_dict: dict,
+    planta_dict: dict,
 ):
     if "San Juan" in planta_activa:
         _titulo = "🟢 RRHH — San Juan"
@@ -167,7 +168,14 @@ def render(
         rep["es_lider"]      = rep["legajo"].map(
             dict(zip(padron_activos["legajo"], padron_activos["es_lider"]))
         ).fillna("NO")
-        rep["base_anual"]    = rep["es_lider"].apply(obtener_tope)
+        # planta por legajo — necesario en la vista "Total Empresa" para
+        # que cada persona use el tope correcto (SJ 8/16h vs Bs.As. 10h fijo).
+        rep["planta_legajo"] = rep["legajo"].map(planta_dict).fillna(
+            key_planta if key_planta != "Total" else "Fábrica"
+        )
+        rep["base_anual"]    = rep.apply(
+            lambda r: obtener_tope(r["es_lider"], r["planta_legajo"]), axis=1
+        )
         rep["consumido_año"] = rep["legajo"].apply(
             lambda leg: horas_comprometidas_año(permisos_activos, leg, año_sel)
         )
@@ -408,10 +416,11 @@ def render(
             (permisos_activos["legajo"] == _leg_h) &
             (permisos_activos["compensa"] == "SI")
         ].copy() if not permisos_activos.empty else pd.DataFrame()
-        _lider = padron_activos[padron_activos["legajo"] == _leg_h]["es_lider"].values
-        _lider = _lider[0] if len(_lider) > 0 else "NO"
-        _tope  = obtener_tope(_lider)
-        _cons  = horas_comprometidas_año(permisos_activos, _leg_h, date.today().year)
+        _lider  = padron_activos[padron_activos["legajo"] == _leg_h]["es_lider"].values
+        _lider  = _lider[0] if len(_lider) > 0 else "NO"
+        _planta_h = planta_dict.get(_leg_h, key_planta if key_planta != "Total" else "Fábrica")
+        _tope   = obtener_tope(_lider, _planta_h)
+        _cons   = horas_comprometidas_año(permisos_activos, _leg_h, date.today().year)
 
         hh1, hh2, hh3 = st.columns(3)
         hh1.metric("Tipo", "👑 Líder" if _lider == "SI" else "Empleada")

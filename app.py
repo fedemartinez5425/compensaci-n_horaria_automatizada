@@ -148,6 +148,7 @@ nombre_a_legajo = dict(zip(padron_activos["nombre"], padron_activos["legajo"])) 
 nombres_lista   = sorted(padron_activos["nombre"].tolist()) if not padron_activos.empty else []
 sector_dict     = dict(zip(padron_activos["legajo"], padron_activos["sector"])) if not padron_activos.empty else {}
 clasif_dict     = dict(zip(padron_activos["legajo"], padron_activos["clasificacion"])) if not padron_activos.empty else {}
+planta_dict     = dict(zip(padron_activos["legajo"], padron_activos["planta"])) if not padron_activos.empty else {}
 
 # ─────────────────────────────────────────────
 # ENRUTAMIENTO
@@ -182,6 +183,7 @@ elif pagina == "🟢 Panel RRHH":
         nombres_lista=nombres_lista,
         sector_dict=sector_dict,
         clasif_dict=clasif_dict,
+        planta_dict=planta_dict,
     )
 
 elif pagina == "📊 Análisis":

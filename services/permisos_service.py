@@ -12,6 +12,7 @@ from config import (
     TOPE_EXTRA_FUERA_TOPE, MOTIVOS_FUERA_TOPE,
     MOTIVOS_COMPENSAN_SJ, MOTIVOS_COMPENSAN_LIDERES_SJ,
     MOTIVOS_COMPENSAN_BSAS,
+    TOPE_HORAS_BSAS, TOPE_HORAS_POR_PERMISO_BSAS,
 )
 
 
@@ -59,8 +60,27 @@ def generar_id(prefijo: str = "P") -> str:
 # ─────────────────────────────────────────────
 # TOPES
 # ─────────────────────────────────────────────
-def obtener_tope(es_lider: str) -> float:
+def obtener_tope(es_lider: str, planta_key: str = "Fábrica") -> float:
+    """
+    Tope anual de compensación.
+    - Bs. As. (política 036): 10h fijas, sin distinguir líder.
+    - San Juan (política 020) — comportamiento sin cambios: 8h normal / 16h líder.
+    El parámetro planta_key es opcional para no romper llamados existentes
+    de San Juan que no lo pasan (default = "Fábrica").
+    """
+    if planta_key == "Casa Central":
+        return TOPE_HORAS_BSAS
     return TOPE_HORAS_LIDER if str(es_lider).strip().upper() == "SI" else TOPE_HORAS_NORMAL
+
+
+def excede_tope_por_permiso(horas: float, planta_key: str) -> bool:
+    """
+    Bs. As. (política 036): máximo 4h compensables por permiso individual.
+    No aplica a San Juan (siempre devuelve False ahí).
+    """
+    if planta_key == "Casa Central":
+        return horas > TOPE_HORAS_POR_PERMISO_BSAS
+    return False
 
 
 def horas_comprometidas_año(permisos_df: pd.DataFrame, legajo: str, año: int) -> float:
