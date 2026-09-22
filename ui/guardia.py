@@ -11,8 +11,6 @@ from datetime import date, time, datetime
 
 from config import (
     MOTIVOS_LISTA, MOTIVOS_FUERA_TOPE, TOPE_EXTRA_FUERA_TOPE,
-    MOTIVOS_COMPENSAN_SJ, MOTIVOS_COMPENSAN_LIDERES_SJ,
-    MOTIVOS_COMPENSAN_BSAS, HORA_FIN_TURNO,
     TOPE_HORAS_POR_PERMISO_BSAS,
 )
 from services.permisos_service import (
@@ -20,6 +18,7 @@ from services.permisos_service import (
     generar_id, validar_permiso, obtener_tope,
     horas_comprometidas_año, horas_fuera_tope_año,
     puede_compensar_por_politica, excede_tope_por_permiso,
+    obtener_hora_fin_turno, excepcion_horario_activa,
 )
 from repositories.sheets_repo import (
     guardar_permiso, agregar_empleado,
@@ -46,6 +45,7 @@ def render(
     padron_dict: dict,
     nombre_a_legajo: dict,
     nombres_lista: list,
+    config_horarios: pd.DataFrame,
 ):
     st.title(f"🛡️ {_label_planta(planta_activa)}")
     st.markdown(
@@ -111,13 +111,24 @@ def render(
         )
 
     # ── Hora salida y Sin Retorno (fuera del form para reactividad) ──
+    # Horario de fin de turno vigente HOY para esta planta (puede estar
+    # modificado por una excepción temporal — ver config.py). El cálculo
+    # final al guardar usa la fecha real del permiso, no necesariamente hoy.
+    _hora_fin_hoy = obtener_hora_fin_turno(config_horarios, key_planta, date.today())
+    _exc_activa   = excepcion_horario_activa(config_horarios, key_planta, date.today())
+    if _exc_activa:
+        st.caption(
+            f"🕐 Horario especial vigente: fin de turno **{_hora_fin_hoy.strftime('%H:%M')}hs** "
+            f"— {_exc_activa['descripcion']} (hasta {_exc_activa['hasta'].strftime('%d/%m/%Y')})"
+        )
+
     cs1, cs2 = st.columns([2, 1])
     with cs1:
         hora_salida_pre = st.time_input("🚪 Hora de salida *", value=time(8, 0), step=60, key="hora_sal_pre")
     with cs2:
         sin_retorno_pre = st.checkbox("🔴 Sin retorno\n(no volvió)", value=False, key="sr_pre")
 
-    valor_entrada = HORA_FIN_TURNO if sin_retorno_pre else time(9, 0)
+    valor_entrada = _hora_fin_hoy if sin_retorno_pre else time(9, 0)
 
     # ── Chequeo de tope anual ────────────────────────────────
     tope_alcanzado     = False
@@ -188,11 +199,11 @@ def render(
             st.markdown("💰 **No compensa** — automático por política.")
 
     # ── Previsualización ────────────────────────────────────
-    if sin_retorno_pre and hora_salida_pre < HORA_FIN_TURNO:
-        mins = minutos_entre(hora_salida_pre, HORA_FIN_TURNO)
+    if sin_retorno_pre and hora_salida_pre < _hora_fin_hoy:
+        mins = minutos_entre(hora_salida_pre, _hora_fin_hoy)
         hrs  = redondear_horas(mins)
         st.info(
-            f"🔴 Sin retorno — {hora_salida_pre.strftime('%H:%M')} → 15:00 "
+            f"🔴 Sin retorno — {hora_salida_pre.strftime('%H:%M')} → {_hora_fin_hoy.strftime('%H:%M')} "
             f"= **{fmt_dur(mins)}** → "
             + (f"**{int(hrs)}h a compensar**" if compensa_pre == "SI" else "no compensa")
         )
@@ -208,7 +219,7 @@ def render(
         fecha_permiso  = st.date_input("📅 Fecha", value=date.today(),
                                         max_value=date.today(), format="DD/MM/YYYY")
         hora_entrada   = st.time_input(
-            "🏁 Hora de entrada" + (" (automático 15:00 — Sin retorno)" if sin_retorno_pre else ""),
+            "🏁 Hora de entrada" + (f" (automático {_hora_fin_hoy.strftime('%H:%M')} — Sin retorno)" if sin_retorno_pre else ""),
             value=valor_entrada, step=60, disabled=sin_retorno_pre,
         )
         registrado_por = st.text_input("👮 Tu nombre *", placeholder="Ej: García Juan")
@@ -217,9 +228,16 @@ def render(
 
         if submitted:
             motivo_final = motivo_otro.strip() if motivo_sel == "Otro" and motivo_otro.strip() else motivo_sel
+
+            # Horario de fin de turno efectivo según la FECHA REAL del permiso
+            # (no la de hoy) — importante para permisos cargados a posteriori,
+            # cerca del borde de una ventana de excepción.
+            _hora_fin_efectiva = obtener_hora_fin_turno(config_horarios, key_planta, fecha_permiso)
+
             errores = validar_permiso(
                 nombre_resuelto, registrado_por,
                 sin_retorno_pre, hora_salida_pre, hora_entrada,
+                hora_fin_turno=_hora_fin_efectiva,
             )
             if not nombre_resuelto:
                 errores.insert(0, "Seleccioná o buscá a la persona primero.")
@@ -227,7 +245,7 @@ def render(
             # Calcular horas ANTES de validar, para poder chequear el
             # tope por permiso individual de Bs. As. (política 036).
             if sin_retorno_pre:
-                mins_r  = minutos_entre(hora_salida_pre, HORA_FIN_TURNO)
+                mins_r  = minutos_entre(hora_salida_pre, _hora_fin_efectiva)
                 hrs_r   = redondear_horas(mins_r) if compensa_pre == "SI" else 0.0
                 ent_str = "S/R"
             else:

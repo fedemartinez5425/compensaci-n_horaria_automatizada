@@ -90,6 +90,71 @@ def leer_compensaciones(_gc) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=30)
+def leer_config_horarios(_gc) -> pd.DataFrame:
+    """
+    Hoja 'config_horarios' — excepciones de horario de fin de turno
+    (ej: reducción horaria temporal), editables desde el Panel RRHH sin
+    tocar código. Si la hoja todavía no existe en el Google Sheet,
+    devuelve vacío y la app sigue funcionando con el horario general
+    (fallback seguro, no rompe nada mientras se crea la hoja).
+    """
+    try:
+        ws = get_workbook(_gc).worksheet("config_horarios")
+    except gspread.exceptions.WorksheetNotFound:
+        return pd.DataFrame(columns=[
+            "id", "planta", "desde", "hasta", "hora_fin",
+            "descripcion", "activo", "creado_por", "timestamp",
+        ])
+    df = pd.DataFrame(ws.get_all_records())
+    if df.empty:
+        return df
+    df["desde"]    = pd.to_datetime(df["desde"], errors="coerce").dt.date
+    df["hasta"]    = pd.to_datetime(df["hasta"], errors="coerce").dt.date
+    df["planta"]   = df["planta"].astype(str).str.strip()
+    df["activo"]   = df["activo"].astype(str).str.upper().str.strip()
+    df["hora_fin"] = df["hora_fin"].astype(str).str.strip()  # formato "HH:MM"
+    return df
+
+
+@st.cache_data(ttl=30)
+def leer_config_app(_gc) -> dict:
+    """
+    Hoja 'config_app' — configuración general clave/valor editable desde
+    el Panel RRHH (hoy: las 2 contraseñas de acceso). Columnas esperadas:
+    clave, valor, actualizado_por, timestamp.
+    Si la hoja todavía no existe, devuelve {} — la app cae de forma segura
+    a los valores por defecto de config.py (PASSWORD_DEFAULT/_RRHH_DEFAULT).
+    """
+    try:
+        ws = get_workbook(_gc).worksheet("config_app")
+    except gspread.exceptions.WorksheetNotFound:
+        return {}
+    registros = ws.get_all_records()
+    return {str(r["clave"]).strip(): str(r["valor"]) for r in registros if r.get("clave")}
+
+
+def actualizar_config_app(gc, clave: str, valor: str, actualizado_por: str) -> None:
+    """
+    Actualiza el valor de una clave en config_app (o la crea si no existía
+    todavía esa fila). Requiere que la hoja 'config_app' ya exista en el
+    Google Sheet — si no existe, tira WorksheetNotFound (se atrapa en la UI).
+    """
+    ws = get_workbook(gc).worksheet("config_app")
+    cell = ws.find(clave)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if cell:
+        headers = ws.row_values(1)
+        ws.update_cell(cell.row, headers.index("valor") + 1, valor)
+        if "actualizado_por" in headers:
+            ws.update_cell(cell.row, headers.index("actualizado_por") + 1, actualizado_por)
+        if "timestamp" in headers:
+            ws.update_cell(cell.row, headers.index("timestamp") + 1, ts)
+    else:
+        ws.append_row([clave, valor, actualizado_por, ts], value_input_option="RAW")
+    leer_config_app.clear()
+
+
 # ─────────────────────────────────────────────
 # ESCRITURA
 # ─────────────────────────────────────────────
@@ -175,3 +240,27 @@ def verificar_compensacion_duplicada(comp_df: pd.DataFrame, legajo: str, fecha) 
         (comp_df["legajo"] == legajo) &
         (comp_df["fecha_compensacion"].dt.date == fecha)
     ).any())
+
+
+def guardar_excepcion_horario(gc, fila: dict) -> None:
+    """Agrega una excepción de horario nueva a la hoja config_horarios."""
+    get_workbook(gc).worksheet("config_horarios").append_row(
+        list(fila.values()), value_input_option="RAW"
+    )
+    leer_config_horarios.clear()
+
+
+def desactivar_excepcion_horario(gc, id_excepcion: str) -> bool:
+    """
+    Marca una excepción como inactiva (activo=NO). No se borra la fila,
+    para dejar historial de qué horarios especiales rigieron y cuándo.
+    """
+    ws = get_workbook(gc).worksheet("config_horarios")
+    cell = ws.find(id_excepcion)
+    if not cell:
+        return False
+    headers = ws.row_values(1)
+    col_activo = headers.index("activo") + 1
+    ws.update_cell(cell.row, col_activo, "NO")
+    leer_config_horarios.clear()
+    return True

@@ -5,7 +5,7 @@ Lógica analítica: MOD, pareto, duración, tiempo no productivo.
 No conoce Google Sheets ni Streamlit.
 """
 import pandas as pd
-from config import MOTIVOS_FUERA_TOPE, ALMUERZO_H
+from config import ALMUERZO_H
 
 
 # ─────────────────────────────────────────────

@@ -11,16 +11,18 @@ import plotly.graph_objects as go
 from datetime import date, datetime
 import calendar as _cal
 
-from config import AÑOS, MESES, CLASIF_COLOR, COLORES, MOTIVOS_FUERA_TOPE
+from config import AÑOS, MESES, CLASIF_COLOR
 from services.permisos_service import (
     calcular_saldos, fmt_horas, generar_id,
     obtener_tope, horas_comprometidas_año,
-    validar_compensacion,
+    validar_compensacion, excepcion_horario_activa,
 )
 from repositories.sheets_repo import (
     guardar_compensacion, corregir_permiso,
     marcar_activo, eliminar_empleado_padron,
     verificar_compensacion_duplicada,
+    guardar_excepcion_horario, desactivar_excepcion_horario,
+    actualizar_config_app,
 )
 
 
@@ -48,6 +50,7 @@ def render(
     sector_dict: dict,
     clasif_dict: dict,
     planta_dict: dict,
+    config_horarios: pd.DataFrame,
 ):
     if "San Juan" in planta_activa:
         _titulo = "🟢 RRHH — San Juan"
@@ -540,7 +543,7 @@ def render(
 
     # ── Detalle del período ───────────────────────────────────
     st.divider()
-    st.subheader(f"🔍 Detalle de permisos del período")
+    st.subheader("🔍 Detalle de permisos del período")
     if not p_f.empty:
         det = p_f[[
             "fecha", "legajo", "nombre", "hora_salida", "hora_entrada",
@@ -555,4 +558,141 @@ def render(
         _caption("Revisá la columna Minutos reales si sospechás que el redondeo no fue correcto.")
         st.dataframe(det, use_container_width=True, hide_index=True)
     else:
-        st.info(f"No hay permisos en este período.")
+        st.info("No hay permisos en este período.")
+
+    # ── Horarios especiales (Sin Retorno) ──────────────────────
+    st.divider()
+    st.subheader("⚙️ Horarios especiales (Sin Retorno)")
+    _caption(
+        "Configurá acá cambios temporales del horario de fin de turno "
+        "(ej: reducción horaria, verano, etc.), sin tocar código. "
+        "Afecta SOLO el cálculo de permisos 'Sin retorno' — el tope anual "
+        "de horas a compensar de cada persona no cambia por esto."
+    )
+
+    _exc_hoy = excepcion_horario_activa(config_horarios, key_planta, date.today())
+    if _exc_hoy:
+        st.success(
+            f"🕐 **Vigente ahora** para {planta_activa}: fin de turno "
+            f"**{_exc_hoy['hora_fin'].strftime('%H:%M')}hs** — {_exc_hoy['descripcion']} "
+            f"(hasta {_exc_hoy['hasta'].strftime('%d/%m/%Y')})"
+        )
+    else:
+        st.caption("No hay ningún horario especial vigente ahora mismo para esta vista — rige el horario general (15:00hs).")
+
+    with st.expander("➕ Agregar un horario especial nuevo"):
+        with st.form("form_horario_especial", clear_on_submit=True):
+            _plt_opts = ["Fábrica", "Casa Central", "Todas"]
+            _plt_labels = {"Fábrica": "San Juan", "Casa Central": "Bs. As.", "Todas": "Ambas plantas"}
+            _plt_h = st.selectbox("Planta a la que aplica", _plt_opts, format_func=lambda p: _plt_labels[p])
+
+            _ch1, _ch2, _ch3 = st.columns(3)
+            with _ch1:
+                _desde_h = st.date_input("Vigente desde", value=date.today(), format="DD/MM/YYYY")
+            with _ch2:
+                _hasta_h = st.date_input("Vigente hasta", value=date.today(), format="DD/MM/YYYY")
+            with _ch3:
+                from datetime import time as _time
+                _hora_h = st.time_input("Nueva hora de fin de turno", value=_time(15, 0), step=60)
+
+            _desc_h  = st.text_input("Descripción", placeholder="Ej: Reducción horaria — corte de energía")
+            _quien_h = st.text_input("Tu nombre *")
+
+            if st.form_submit_button("💾 Guardar horario especial", type="primary", use_container_width=True):
+                if _hasta_h < _desde_h:
+                    st.error("❌ La fecha 'hasta' no puede ser anterior a 'desde'.")
+                elif not _quien_h.strip():
+                    st.error("❌ Falta tu nombre.")
+                else:
+                    try:
+                        guardar_excepcion_horario(gc, {
+                            "id":          generar_id("H"),
+                            "planta":      _plt_h,
+                            "desde":       _desde_h.strftime("%Y-%m-%d"),
+                            "hasta":       _hasta_h.strftime("%Y-%m-%d"),
+                            "hora_fin":    _hora_h.strftime("%H:%M"),
+                            "descripcion": _desc_h.strip() or "Horario especial",
+                            "activo":      "SI",
+                            "creado_por":  _quien_h.strip(),
+                            "timestamp":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        })
+                        st.success(
+                            "✅ Horario especial guardado — ya está vigente para los permisos "
+                            "que correspondan, sin necesidad de reiniciar nada."
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Error al guardar: {e}")
+
+    if not config_horarios.empty:
+        st.markdown("**Horarios especiales cargados:**")
+        _tabla_h = config_horarios.copy()
+        _tabla_h["planta"] = _tabla_h["planta"].map({
+            "Fábrica": "San Juan", "Casa Central": "Bs. As.", "Todas": "Ambas plantas",
+        }).fillna(_tabla_h["planta"])
+        _tabla_h["desde"] = _tabla_h["desde"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—")
+        _tabla_h["hasta"] = _tabla_h["hasta"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—")
+        _mostrar_h = _tabla_h[["descripcion", "planta", "desde", "hasta", "hora_fin", "activo"]].copy()
+        _mostrar_h.columns = ["Descripción", "Planta", "Desde", "Hasta", "Nueva hora fin", "Activo"]
+        st.dataframe(_mostrar_h, use_container_width=True, hide_index=True)
+
+        _activas_h = config_horarios[config_horarios["activo"] == "SI"]
+        if not _activas_h.empty:
+            _desact_opts = ["— Seleccioná —"] + _activas_h["descripcion"].tolist()
+            _sel_desact = st.selectbox(
+                "Desactivar un horario especial (ej: si terminó antes de lo previsto)",
+                _desact_opts, key="desact_horario_especial",
+            )
+            if _sel_desact != "— Seleccioná —":
+                if st.button("🚫 Desactivar horario seleccionado", key="btn_desact_horario"):
+                    _id_sel = _activas_h[_activas_h["descripcion"] == _sel_desact]["id"].values[0]
+                    if desactivar_excepcion_horario(gc, _id_sel):
+                        st.success("✅ Desactivado.")
+                        st.rerun()
+                    else:
+                        st.error("❌ No se encontró el registro. Recargá la página e intentá de nuevo.")
+    else:
+        st.caption(
+            "No hay horarios especiales cargados todavía. Si el Google Sheet no tiene "
+            "la hoja 'config_horarios', creála una vez con las columnas: id, planta, "
+            "desde, hasta, hora_fin, descripcion, activo, creado_por, timestamp."
+        )
+
+    # ── Contraseñas de acceso ───────────────────────────────────
+    st.divider()
+    st.subheader("🔑 Cambiar contraseñas de acceso")
+    _caption(
+        "Las contraseñas del Panel Guardia y del Panel RRHH se guardan acá, "
+        "no en el código — así cualquier persona de RRHH puede cambiarlas "
+        "sin depender de un programador."
+    )
+    with st.expander("Cambiar una contraseña"):
+        with st.form("form_cambiar_password", clear_on_submit=True):
+            _cual_pw = st.selectbox(
+                "¿Cuál contraseña querés cambiar?",
+                ["Panel Guardia", "Panel RRHH"],
+            )
+            _nueva_pw   = st.text_input("Nueva contraseña", type="password")
+            _repetir_pw = st.text_input("Repetí la nueva contraseña", type="password")
+            _quien_pw   = st.text_input("Tu nombre *")
+
+            if st.form_submit_button("💾 Actualizar contraseña", type="primary", use_container_width=True):
+                if not _nueva_pw.strip():
+                    st.error("❌ La contraseña no puede estar vacía.")
+                elif _nueva_pw != _repetir_pw:
+                    st.error("❌ Las dos contraseñas no coinciden.")
+                elif not _quien_pw.strip():
+                    st.error("❌ Falta tu nombre.")
+                else:
+                    _clave_config = "password_guardia" if _cual_pw == "Panel Guardia" else "password_rrhh"
+                    try:
+                        actualizar_config_app(gc, _clave_config, _nueva_pw.strip(), _quien_pw.strip())
+                        st.success(
+                            f"✅ Contraseña de {_cual_pw} actualizada. "
+                            "Va a regir desde el próximo ingreso (las sesiones ya abiertas no se cierran solas)."
+                        )
+                    except Exception as e:
+                        st.error(
+                            f"❌ Error: {e}. Si el Google Sheet no tiene la hoja 'config_app', "
+                            "creála una vez con las columnas: clave, valor, actualizado_por, timestamp."
+                        )

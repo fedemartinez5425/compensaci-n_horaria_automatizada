@@ -12,12 +12,22 @@ from datetime import time
 # ── App ────────────────────────────────────────────────────────
 APP_TITLE     = "GILDAN — Control de Permisos"
 APP_ICON      = "🏭"
-PASSWORD      = "1234"
-PASSWORD_RRHH = "9876"
+PASSWORD_DEFAULT      = "1234"   # fallback si config_app no existe todavía
+PASSWORD_RRHH_DEFAULT = "9876"   # ídem — se usa solo la primera vez
+# Las contraseñas reales se gestionan desde el Panel RRHH → "Cambiar
+# contraseñas de acceso", guardadas en la hoja 'config_app' del Google
+# Sheet. Estos valores de acá son solo el arranque inicial / red de
+# seguridad si esa hoja no existe o está vacía.
 
 # ── Turnos ─────────────────────────────────────────────────────
-HORA_FIN_TURNO      = time(15, 0)   # fin de turno fábrica (para S/R)
+HORA_FIN_TURNO      = time(15, 0)   # fin de turno general (para S/R)
 ALMUERZO_H          = 0.5           # descuento de almuerzo en métricas MOD
+
+# Las excepciones temporales de horario (ej: reducción horaria) ya NO se
+# configuran acá — se cargan desde el Panel RRHH → "Horarios especiales",
+# y se guardan en la hoja 'config_horarios' del Google Sheet. Ver
+# services/permisos_service.py (obtener_hora_fin_turno) y
+# repositories/sheets_repo.py (leer_config_horarios).
 
 # ── Plantas ────────────────────────────────────────────────────
 PLANTAS = ["Fábrica San Juan", "Casa Central Bs. As.", "🏢 Total Empresa"]

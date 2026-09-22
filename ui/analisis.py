@@ -10,12 +10,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import date
 
-from config import AÑOS, MESES, COLORES, ALMUERZO_H, MOTIVOS_FUERA_TOPE
+from config import COLORES, ALMUERZO_H
 from services.permisos_service import fmt_horas, kpi_compensacion_acumulado
 from services.analytics_service import (
     filtrar_mod, filtrar_rango_fecha,
     resumen_mod_diario, resumen_mod_nc_diario, detalle_mod_nc_por_persona,
-    tiempo_no_productivo, calcular_pareto, tabla_duracion, ORDEN_DURACION,
+    tiempo_no_productivo, calcular_pareto, tabla_duracion,
 )
 
 # ─────────────────────────────────────────────
@@ -222,7 +222,6 @@ semanales y permite ver tendencias más amplias.
     with fp1:
         año_par = st.multiselect("Año", años_disp, default=años_disp, key="fil_par_año")
     with fp2:
-        clasifs_disp = sorted(permisos_planta["compensa"].dropna().unique().tolist())
         comp_par = st.multiselect("Compensa", ["SI", "NO"], default=["SI", "NO"], key="fil_par_comp")
 
     _ayuda("Cómo interpretar el Pareto de motivos",

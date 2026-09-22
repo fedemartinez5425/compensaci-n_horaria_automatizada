@@ -9,7 +9,7 @@ from datetime import date, datetime, time
 from config import (
     HORA_FIN_TURNO,
     TOPE_HORAS_NORMAL, TOPE_HORAS_LIDER,
-    TOPE_EXTRA_FUERA_TOPE, MOTIVOS_FUERA_TOPE,
+    MOTIVOS_FUERA_TOPE,
     MOTIVOS_COMPENSAN_SJ, MOTIVOS_COMPENSAN_LIDERES_SJ,
     MOTIVOS_COMPENSAN_BSAS,
     TOPE_HORAS_BSAS, TOPE_HORAS_POR_PERMISO_BSAS,
@@ -55,6 +55,48 @@ def fmt_horas(h: float) -> str:
 
 def generar_id(prefijo: str = "P") -> str:
     return f"{prefijo}{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+
+# ─────────────────────────────────────────────
+# HORARIO DE FIN DE TURNO (con excepciones configurables desde la UI)
+# ─────────────────────────────────────────────
+def excepcion_horario_activa(config_horarios_df: pd.DataFrame, planta_key: str, fecha=None) -> dict | None:
+    """
+    Devuelve el diccionario de la excepción vigente para esa planta/fecha
+    (leída de la hoja config_horarios, cargada desde el Panel RRHH), o
+    None si no hay ninguna activa (rige el horario general).
+    """
+    if fecha is None:
+        fecha = date.today()
+    if config_horarios_df is None or config_horarios_df.empty:
+        return None
+    activas = config_horarios_df[config_horarios_df["activo"] == "SI"]
+    for _, row in activas.iterrows():
+        if row["desde"] <= fecha <= row["hasta"] and row["planta"] in (planta_key, "Todas"):
+            try:
+                hora_fin = datetime.strptime(str(row["hora_fin"]), "%H:%M").time()
+            except ValueError:
+                continue  # fila mal cargada, la ignoramos en vez de romper la app
+            return {
+                "id":          row.get("id", ""),
+                "descripcion": row.get("descripcion", "Horario especial"),
+                "planta":      row["planta"],
+                "desde":       row["desde"],
+                "hasta":       row["hasta"],
+                "hora_fin":    hora_fin,
+            }
+    return None
+
+
+def obtener_hora_fin_turno(config_horarios_df: pd.DataFrame, planta_key: str, fecha=None) -> time:
+    """
+    Hora de "fin de turno" vigente para calcular permisos Sin Retorno.
+    Si hay una excepción activa (cargada desde el Panel RRHH) para esa
+    planta/fecha, la usa; si no, devuelve el HORA_FIN_TURNO general de
+    config.py. No afecta los topes anuales de compensación.
+    """
+    exc = excepcion_horario_activa(config_horarios_df, planta_key, fecha)
+    return exc["hora_fin"] if exc else HORA_FIN_TURNO
 
 
 # ─────────────────────────────────────────────
@@ -248,6 +290,7 @@ def validar_permiso(
     sin_retorno: bool,
     hora_salida: time,
     hora_entrada: time,
+    hora_fin_turno: time = HORA_FIN_TURNO,
 ) -> list[str]:
     """Retorna lista de errores. Vacía = sin errores."""
     errores = []
@@ -255,8 +298,10 @@ def validar_permiso(
         errores.append("Seleccioná o buscá a la persona primero.")
     if not registrado_por.strip():
         errores.append("Falta el nombre del guardia.")
-    if sin_retorno and hora_salida >= HORA_FIN_TURNO:
-        errores.append("Hora de salida posterior al fin de turno (15:00). Verificá.")
+    if sin_retorno and hora_salida >= hora_fin_turno:
+        errores.append(
+            f"Hora de salida posterior al fin de turno ({hora_fin_turno.strftime('%H:%M')}). Verificá."
+        )
     if not sin_retorno and hora_entrada <= hora_salida:
         errores.append("La hora de entrada debe ser posterior a la salida.")
     return errores

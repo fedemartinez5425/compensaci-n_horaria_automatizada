@@ -14,9 +14,10 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 
-from config import APP_TITLE, APP_ICON, PLANTAS, PASSWORD, PASSWORD_RRHH
+from config import APP_TITLE, APP_ICON, PLANTAS, PASSWORD_DEFAULT, PASSWORD_RRHH_DEFAULT
 from repositories.sheets_repo import (
     conectar, leer_padron, leer_permisos, leer_compensaciones,
+    leer_config_horarios, leer_config_app,
 )
 from ui import guardia, rrhh, analisis, documentacion
 
@@ -29,6 +30,22 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ─────────────────────────────────────────────
+# CONEXIÓN — se hace ANTES del login porque el login necesita leer
+# las contraseñas vigentes desde config_app. Usa las credenciales de
+# la cuenta de servicio (no las del usuario humano), así que no hace
+# falta que la persona ya esté autenticada para esto.
+# ─────────────────────────────────────────────
+try:
+    gc = conectar()
+    _config_app = leer_config_app(gc)
+except Exception as e:
+    st.error(f"No se pudo conectar con Google Sheets: {e}")
+    st.stop()
+
+PASSWORD      = _config_app.get("password_guardia", PASSWORD_DEFAULT)
+PASSWORD_RRHH = _config_app.get("password_rrhh", PASSWORD_RRHH_DEFAULT)
 
 # ─────────────────────────────────────────────
 # LOGIN
@@ -67,19 +84,14 @@ def check_login_rrhh():
         st.stop()
 
 # ─────────────────────────────────────────────
-# CONEXIÓN Y CARGA DE DATOS
+# CARGA DE DATOS (gc ya está conectado desde arriba)
 # ─────────────────────────────────────────────
 try:
-    gc = conectar()
-except Exception as e:
-    st.error(f"No se pudo conectar con Google Sheets: {e}")
-    st.stop()
-
-try:
     with st.spinner("Cargando datos..."):
-        padron         = leer_padron(gc)
-        permisos       = leer_permisos(gc)
-        compensaciones = leer_compensaciones(gc)
+        padron          = leer_padron(gc)
+        permisos        = leer_permisos(gc)
+        compensaciones  = leer_compensaciones(gc)
+        config_horarios = leer_config_horarios(gc)
 except Exception as e:
     st.error(f"Error al leer datos: {e}")
     st.stop()
@@ -166,6 +178,7 @@ if pagina == "🔵 Panel Guardia":
         padron_dict=padron_dict,
         nombre_a_legajo=nombre_a_legajo,
         nombres_lista=nombres_lista,
+        config_horarios=config_horarios,
     )
 
 elif pagina == "🟢 Panel RRHH":
@@ -184,6 +197,7 @@ elif pagina == "🟢 Panel RRHH":
         sector_dict=sector_dict,
         clasif_dict=clasif_dict,
         planta_dict=planta_dict,
+        config_horarios=config_horarios,
     )
 
 elif pagina == "📊 Análisis":
