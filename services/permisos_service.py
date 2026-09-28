@@ -60,11 +60,27 @@ def generar_id(prefijo: str = "P") -> str:
 # ─────────────────────────────────────────────
 # HORARIO DE FIN DE TURNO (con excepciones configurables desde la UI)
 # ─────────────────────────────────────────────
-def excepcion_horario_activa(config_horarios_df: pd.DataFrame, planta_key: str, fecha=None) -> dict | None:
+def _parse_excluidos(valor) -> list[str]:
+    """Convierte el campo 'excluidos_legajos' (string separado por comas) en lista."""
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return []
+    return [x.strip() for x in str(valor).split(",") if x.strip()]
+
+
+def excepcion_horario_activa(
+    config_horarios_df: pd.DataFrame,
+    planta_key: str,
+    fecha=None,
+    legajo: str = None,
+) -> dict | None:
     """
     Devuelve el diccionario de la excepción vigente para esa planta/fecha
     (leída de la hoja config_horarios, cargada desde el Panel RRHH), o
     None si no hay ninguna activa (rige el horario general).
+
+    Si se pasa `legajo` y esa persona está en la lista de excluidos de la
+    excepción (personas que siguen con el horario normal, ej: EXEMPT que
+    hace jornada completa), la excepción NO se considera activa para ella.
     """
     if fecha is None:
         fecha = date.today()
@@ -73,6 +89,9 @@ def excepcion_horario_activa(config_horarios_df: pd.DataFrame, planta_key: str, 
     activas = config_horarios_df[config_horarios_df["activo"] == "SI"]
     for _, row in activas.iterrows():
         if row["desde"] <= fecha <= row["hasta"] and row["planta"] in (planta_key, "Todas"):
+            excluidos = _parse_excluidos(row.get("excluidos_legajos", ""))
+            if legajo and legajo in excluidos:
+                continue  # esta persona está exceptuada de la excepción — sigue con horario normal
             try:
                 hora_fin = datetime.strptime(str(row["hora_fin"]), "%H:%M").time()
             except ValueError:
@@ -84,18 +103,24 @@ def excepcion_horario_activa(config_horarios_df: pd.DataFrame, planta_key: str, 
                 "desde":       row["desde"],
                 "hasta":       row["hasta"],
                 "hora_fin":    hora_fin,
+                "excluidos":   excluidos,
             }
     return None
 
 
-def obtener_hora_fin_turno(config_horarios_df: pd.DataFrame, planta_key: str, fecha=None) -> time:
+def obtener_hora_fin_turno(
+    config_horarios_df: pd.DataFrame,
+    planta_key: str,
+    fecha=None,
+    legajo: str = None,
+) -> time:
     """
     Hora de "fin de turno" vigente para calcular permisos Sin Retorno.
     Si hay una excepción activa (cargada desde el Panel RRHH) para esa
-    planta/fecha, la usa; si no, devuelve el HORA_FIN_TURNO general de
-    config.py. No afecta los topes anuales de compensación.
+    planta/fecha/persona, la usa; si no, devuelve el HORA_FIN_TURNO
+    general de config.py. No afecta los topes anuales de compensación.
     """
-    exc = excepcion_horario_activa(config_horarios_df, planta_key, fecha)
+    exc = excepcion_horario_activa(config_horarios_df, planta_key, fecha, legajo)
     return exc["hora_fin"] if exc else HORA_FIN_TURNO
 
 

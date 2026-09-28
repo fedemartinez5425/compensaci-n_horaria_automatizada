@@ -104,7 +104,8 @@ def leer_config_horarios(_gc) -> pd.DataFrame:
     except gspread.exceptions.WorksheetNotFound:
         return pd.DataFrame(columns=[
             "id", "planta", "desde", "hasta", "hora_fin",
-            "descripcion", "activo", "creado_por", "timestamp",
+            "descripcion", "activo", "excluidos_legajos",
+            "creado_por", "timestamp",
         ])
     df = pd.DataFrame(ws.get_all_records())
     if df.empty:
@@ -114,6 +115,10 @@ def leer_config_horarios(_gc) -> pd.DataFrame:
     df["planta"]   = df["planta"].astype(str).str.strip()
     df["activo"]   = df["activo"].astype(str).str.upper().str.strip()
     df["hora_fin"] = df["hora_fin"].astype(str).str.strip()  # formato "HH:MM"
+    if "excluidos_legajos" not in df.columns:
+        df["excluidos_legajos"] = ""  # hojas creadas antes de esta columna existir
+    else:
+        df["excluidos_legajos"] = df["excluidos_legajos"].astype(str).replace("nan", "")
     return df
 
 
@@ -182,9 +187,16 @@ def agregar_empleado(gc, legajo: str, nombre: str, sector: str,
     leer_padron.clear()
 
 
-def corregir_permiso(gc, id_permiso: str, accion: str, razon: str, usuario: str) -> bool:
+def corregir_permiso(
+    gc, id_permiso: str, accion: str, razon: str, usuario: str,
+    nuevas_horas: float = None,
+) -> bool:
     """
-    Anula o cambia compensa de un permiso existente.
+    Corrige un permiso existente. Acciones soportadas:
+      - "Anular registro"
+      - "Cambiar compensa=SI a NO"
+      - "Cambiar compensa=NO a SI"
+      - "Corregir horas manualmente" (requiere nuevas_horas)
     Escribe la razón en el campo registrado_por (auditoría).
     Retorna True si encontró y modificó el registro.
     """
@@ -194,15 +206,26 @@ def corregir_permiso(gc, id_permiso: str, accion: str, razon: str, usuario: str)
         return False
     row = cell.row
     ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
-    audit = f"{accion} por {usuario} — {razon} — {ts}"
     if accion == "Anular registro":
+        audit = f"{accion} por {usuario} — {razon} — {ts}"
         ws.update_cell(row, 9,  "ANULADO")
         ws.update_cell(row, 11, "0")
     elif accion == "Cambiar compensa=SI a NO":
+        audit = f"{accion} por {usuario} — {razon} — {ts}"
         ws.update_cell(row, 9,  "NO")
         ws.update_cell(row, 11, "0")
     elif accion == "Cambiar compensa=NO a SI":
+        audit = f"{accion} por {usuario} — {razon} — {ts}"
         ws.update_cell(row, 9, "SI")
+    elif accion == "Corregir horas manualmente":
+        horas_previas = ws.cell(row, 11).value
+        audit = (
+            f"Horas corregidas manualmente: {horas_previas}h → {nuevas_horas}h "
+            f"por {usuario} — {razon} — {ts}"
+        )
+        ws.update_cell(row, 11, str(nuevas_horas))
+    else:
+        return False
     ws.update_cell(row, 12, audit)
     leer_permisos.clear()
     return True
@@ -262,5 +285,24 @@ def desactivar_excepcion_horario(gc, id_excepcion: str) -> bool:
     headers = ws.row_values(1)
     col_activo = headers.index("activo") + 1
     ws.update_cell(cell.row, col_activo, "NO")
+    leer_config_horarios.clear()
+    return True
+
+
+def editar_excluidos_horario(gc, id_excepcion: str, legajos_excluidos: list[str]) -> bool:
+    """
+    Reemplaza la lista completa de legajos excluidos de una excepción de
+    horario ya cargada (ej: agregar o sacar gente de "sigue con horario
+    normal") sin tener que borrar y recrear todo el horario especial.
+    """
+    ws = get_workbook(gc).worksheet("config_horarios")
+    cell = ws.find(id_excepcion)
+    if not cell:
+        return False
+    headers = ws.row_values(1)
+    if "excluidos_legajos" not in headers:
+        return False  # hoja vieja sin esta columna — hay que agregarla a mano una vez
+    col = headers.index("excluidos_legajos") + 1
+    ws.update_cell(cell.row, col, ",".join(legajos_excluidos))
     leer_config_horarios.clear()
     return True

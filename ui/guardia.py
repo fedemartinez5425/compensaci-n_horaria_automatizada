@@ -11,7 +11,7 @@ from datetime import date, time, datetime
 
 from config import (
     MOTIVOS_LISTA, MOTIVOS_FUERA_TOPE, TOPE_EXTRA_FUERA_TOPE,
-    TOPE_HORAS_POR_PERMISO_BSAS,
+    TOPE_HORAS_POR_PERMISO_BSAS, HORA_FIN_TURNO,
 )
 from services.permisos_service import (
     redondear_horas, minutos_entre, fmt_dur, fmt_horas,
@@ -111,16 +111,32 @@ def render(
         )
 
     # ── Hora salida y Sin Retorno (fuera del form para reactividad) ──
-    # Horario de fin de turno vigente HOY para esta planta (puede estar
-    # modificado por una excepción temporal — ver config.py). El cálculo
-    # final al guardar usa la fecha real del permiso, no necesariamente hoy.
-    _hora_fin_hoy = obtener_hora_fin_turno(config_horarios, key_planta, date.today())
-    _exc_activa   = excepcion_horario_activa(config_horarios, key_planta, date.today())
-    if _exc_activa:
-        st.caption(
-            f"🕐 Horario especial vigente: fin de turno **{_hora_fin_hoy.strftime('%H:%M')}hs** "
-            f"— {_exc_activa['descripcion']} (hasta {_exc_activa['hasta'].strftime('%d/%m/%Y')})"
-        )
+    # Horario de fin de turno vigente HOY para esta persona/planta (puede
+    # estar modificado por una excepción temporal, y esa persona puede
+    # estar excluida de la excepción — ver Panel RRHH). El cálculo final
+    # al guardar usa la fecha real del permiso, no necesariamente hoy.
+    # IMPORTANTE: esto solo aplica a San Juan. En Bs. As. "Sin retorno" no
+    # fuerza ningún horario — el guardia carga la hora real de salida
+    # definitiva, porque ahí la gente no tiene un fin de turno común.
+    if es_sj:
+        _hora_fin_hoy = obtener_hora_fin_turno(config_horarios, key_planta, date.today(), legajo=legajo_resuelto)
+        _exc_activa   = excepcion_horario_activa(config_horarios, key_planta, date.today(), legajo=legajo_resuelto)
+        if _exc_activa:
+            st.caption(
+                f"🕐 Horario especial vigente: fin de turno **{_hora_fin_hoy.strftime('%H:%M')}hs** "
+                f"— {_exc_activa['descripcion']} (hasta {_exc_activa['hasta'].strftime('%d/%m/%Y')})"
+            )
+        elif legajo_resuelto:
+            # Puede que haya una excepción activa para la planta pero esta
+            # persona esté en la lista de excluidos — avisamos por qué.
+            _exc_sin_filtro = excepcion_horario_activa(config_horarios, key_planta, date.today())
+            if _exc_sin_filtro and legajo_resuelto in _exc_sin_filtro.get("excluidos", []):
+                st.caption(
+                    f"ℹ️ {nombre_resuelto} está exceptuada del horario especial "
+                    f"'{_exc_sin_filtro['descripcion']}' — sigue con el horario normal (15:00hs)."
+                )
+    else:
+        _hora_fin_hoy = None  # no aplica para Bs. As. — no debería usarse en ningún cálculo
 
     cs1, cs2 = st.columns([2, 1])
     with cs1:
@@ -128,7 +144,17 @@ def render(
     with cs2:
         sin_retorno_pre = st.checkbox("🔴 Sin retorno\n(no volvió)", value=False, key="sr_pre")
 
-    valor_entrada = _hora_fin_hoy if sin_retorno_pre else time(9, 0)
+    # En San Juan, Sin Retorno bloquea el campo y calcula contra el fin de
+    # turno. En Bs. As., Sin Retorno es solo una etiqueta — el campo queda
+    # siempre editable, porque cada persona vuelve a un horario distinto.
+    _sr_bloqueado = sin_retorno_pre and es_sj
+    valor_entrada = _hora_fin_hoy if _sr_bloqueado else time(9, 0)
+
+    if sin_retorno_pre and not es_sj:
+        st.caption(
+            "ℹ️ En Bs. As., 'Sin retorno' no fuerza ningún horario — cargá abajo "
+            "la hora real en que esa persona terminó su jornada."
+        )
 
     # ── Chequeo de tope anual ────────────────────────────────
     tope_alcanzado     = False
@@ -199,7 +225,7 @@ def render(
             st.markdown("💰 **No compensa** — automático por política.")
 
     # ── Previsualización ────────────────────────────────────
-    if sin_retorno_pre and hora_salida_pre < _hora_fin_hoy:
+    if _sr_bloqueado and hora_salida_pre < _hora_fin_hoy:
         mins = minutos_entre(hora_salida_pre, _hora_fin_hoy)
         hrs  = redondear_horas(mins)
         st.info(
@@ -207,7 +233,7 @@ def render(
             f"= **{fmt_dur(mins)}** → "
             + (f"**{int(hrs)}h a compensar**" if compensa_pre == "SI" else "no compensa")
         )
-    elif not sin_retorno_pre and valor_entrada > hora_salida_pre:
+    elif not _sr_bloqueado and valor_entrada > hora_salida_pre:
         mins = minutos_entre(hora_salida_pre, valor_entrada)
         hrs  = redondear_horas(mins)
         st.info(
@@ -219,8 +245,8 @@ def render(
         fecha_permiso  = st.date_input("📅 Fecha", value=date.today(),
                                         max_value=date.today(), format="DD/MM/YYYY")
         hora_entrada   = st.time_input(
-            "🏁 Hora de entrada" + (f" (automático {_hora_fin_hoy.strftime('%H:%M')} — Sin retorno)" if sin_retorno_pre else ""),
-            value=valor_entrada, step=60, disabled=sin_retorno_pre,
+            "🏁 Hora de entrada" + (f" (automático {_hora_fin_hoy.strftime('%H:%M')} — Sin retorno)" if _sr_bloqueado else ""),
+            value=valor_entrada, step=60, disabled=_sr_bloqueado,
         )
         registrado_por = st.text_input("👮 Tu nombre *", placeholder="Ej: García Juan")
 
@@ -230,13 +256,18 @@ def render(
             motivo_final = motivo_otro.strip() if motivo_sel == "Otro" and motivo_otro.strip() else motivo_sel
 
             # Horario de fin de turno efectivo según la FECHA REAL del permiso
-            # (no la de hoy) — importante para permisos cargados a posteriori,
-            # cerca del borde de una ventana de excepción.
-            _hora_fin_efectiva = obtener_hora_fin_turno(config_horarios, key_planta, fecha_permiso)
+            # (no la de hoy) — solo aplica a San Juan. Bs. As. no fuerza
+            # ningún horario; usa siempre la hora real que cargó el guardia.
+            if es_sj:
+                _hora_fin_efectiva = obtener_hora_fin_turno(
+                    config_horarios, key_planta, fecha_permiso, legajo=legajo_resuelto
+                )
+            else:
+                _hora_fin_efectiva = HORA_FIN_TURNO  # no se usa (sin_retorno=False acá abajo)
 
             errores = validar_permiso(
                 nombre_resuelto, registrado_por,
-                sin_retorno_pre, hora_salida_pre, hora_entrada,
+                _sr_bloqueado, hora_salida_pre, hora_entrada,
                 hora_fin_turno=_hora_fin_efectiva,
             )
             if not nombre_resuelto:
@@ -244,7 +275,7 @@ def render(
 
             # Calcular horas ANTES de validar, para poder chequear el
             # tope por permiso individual de Bs. As. (política 036).
-            if sin_retorno_pre:
+            if _sr_bloqueado:
                 mins_r  = minutos_entre(hora_salida_pre, _hora_fin_efectiva)
                 hrs_r   = redondear_horas(mins_r) if compensa_pre == "SI" else 0.0
                 ent_str = "S/R"

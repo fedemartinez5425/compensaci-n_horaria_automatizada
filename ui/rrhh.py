@@ -22,6 +22,7 @@ from repositories.sheets_repo import (
     marcar_activo, eliminar_empleado_padron,
     verificar_compensacion_duplicada,
     guardar_excepcion_horario, desactivar_excepcion_horario,
+    editar_excluidos_horario,
     actualizar_config_app,
 )
 
@@ -470,8 +471,21 @@ def render(
                 reg_sel = st.selectbox("Registro", ["— Seleccioná —"] + _pe["_label"].tolist(), key="edit_r")
                 if reg_sel and reg_sel != "— Seleccioná —":
                     _id_sel = _pe[_pe["_label"] == reg_sel]["id"].values[0]
-                    st.info(f"ID: **{_id_sel}**")
-                    accion  = st.radio("Acción", ["Cambiar compensa=SI a NO", "Cambiar compensa=NO a SI", "Anular registro"], horizontal=True, key="edit_acc")
+                    _horas_actuales = _pe[_pe["_label"] == reg_sel]["horas_redondeadas"].values[0]
+                    st.info(f"ID: **{_id_sel}** — horas actuales: **{fmt_horas(_horas_actuales)}**")
+                    accion  = st.radio(
+                        "Acción",
+                        ["Cambiar compensa=SI a NO", "Cambiar compensa=NO a SI",
+                         "Anular registro", "Corregir horas manualmente"],
+                        horizontal=True, key="edit_acc",
+                    )
+                    _nuevas_horas = None
+                    if accion == "Corregir horas manualmente":
+                        _nuevas_horas = st.number_input(
+                            "Nuevas horas (reemplaza el valor actual)",
+                            min_value=0.0, max_value=24.0,
+                            value=float(_horas_actuales), step=0.5, key="edit_nuevas_horas",
+                        )
                     razon   = st.text_input("Razón del cambio *", key="edit_raz")
                     quien   = st.text_input("Tu nombre *", key="edit_qui")
                     if st.button("Aplicar corrección", type="primary", key="btn_editar"):
@@ -480,7 +494,10 @@ def render(
                         elif not quien.strip():
                             st.error("❌ Falta tu nombre.")
                         else:
-                            if corregir_permiso(gc, _id_sel, accion, razon.strip(), quien.strip()):
+                            if corregir_permiso(
+                                gc, _id_sel, accion, razon.strip(), quien.strip(),
+                                nuevas_horas=_nuevas_horas,
+                            ):
                                 st.success("✅ Corrección aplicada.")
                             else:
                                 st.error("❌ No se encontró el registro. Recargá la página.")
@@ -586,6 +603,12 @@ def render(
             _plt_labels = {"Fábrica": "San Juan", "Casa Central": "Bs. As.", "Todas": "Ambas plantas"}
             _plt_h = st.selectbox("Planta a la que aplica", _plt_opts, format_func=lambda p: _plt_labels[p])
 
+            _nombres_excl_pre = st.multiselect(
+                "Personas que quedan EXCLUIDAS de este horario especial "
+                "(siguen con el horario normal — ej: EXEMPT, mantenimiento)",
+                nombres_lista, key="excl_nuevo_horario",
+            )
+
             _ch1, _ch2, _ch3 = st.columns(3)
             with _ch1:
                 _desde_h = st.date_input("Vigente desde", value=date.today(), format="DD/MM/YYYY")
@@ -605,16 +628,18 @@ def render(
                     st.error("❌ Falta tu nombre.")
                 else:
                     try:
+                        _legajos_excl = [nombre_a_legajo[n] for n in _nombres_excl_pre if n in nombre_a_legajo]
                         guardar_excepcion_horario(gc, {
-                            "id":          generar_id("H"),
-                            "planta":      _plt_h,
-                            "desde":       _desde_h.strftime("%Y-%m-%d"),
-                            "hasta":       _hasta_h.strftime("%Y-%m-%d"),
-                            "hora_fin":    _hora_h.strftime("%H:%M"),
-                            "descripcion": _desc_h.strip() or "Horario especial",
-                            "activo":      "SI",
-                            "creado_por":  _quien_h.strip(),
-                            "timestamp":   datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "id":                generar_id("H"),
+                            "planta":            _plt_h,
+                            "desde":             _desde_h.strftime("%Y-%m-%d"),
+                            "hasta":             _hasta_h.strftime("%Y-%m-%d"),
+                            "hora_fin":          _hora_h.strftime("%H:%M"),
+                            "descripcion":       _desc_h.strip() or "Horario especial",
+                            "activo":            "SI",
+                            "excluidos_legajos": ",".join(_legajos_excl),
+                            "creado_por":        _quien_h.strip(),
+                            "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         })
                         st.success(
                             "✅ Horario especial guardado — ya está vigente para los permisos "
@@ -632,8 +657,12 @@ def render(
         }).fillna(_tabla_h["planta"])
         _tabla_h["desde"] = _tabla_h["desde"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—")
         _tabla_h["hasta"] = _tabla_h["hasta"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—")
-        _mostrar_h = _tabla_h[["descripcion", "planta", "desde", "hasta", "hora_fin", "activo"]].copy()
-        _mostrar_h.columns = ["Descripción", "Planta", "Desde", "Hasta", "Nueva hora fin", "Activo"]
+        _legajo_a_nombre = {v: k for k, v in nombre_a_legajo.items()}
+        _tabla_h["excluidos_nombres"] = _tabla_h.get("excluidos_legajos", "").apply(
+            lambda s: ", ".join(_legajo_a_nombre.get(l, l) for l in str(s).split(",") if l.strip()) or "—"
+        )
+        _mostrar_h = _tabla_h[["descripcion", "planta", "desde", "hasta", "hora_fin", "activo", "excluidos_nombres"]].copy()
+        _mostrar_h.columns = ["Descripción", "Planta", "Desde", "Hasta", "Nueva hora fin", "Activo", "Excluidos"]
         st.dataframe(_mostrar_h, use_container_width=True, hide_index=True)
 
         _activas_h = config_horarios[config_horarios["activo"] == "SI"]
@@ -651,11 +680,36 @@ def render(
                         st.rerun()
                     else:
                         st.error("❌ No se encontró el registro. Recargá la página e intentá de nuevo.")
+
+            st.markdown("**✏️ Editar quién está excluido** (sumar o sacar gente sin recrear el horario)")
+            _sel_edit_excl = st.selectbox(
+                "Horario especial a editar",
+                ["— Seleccioná —"] + _activas_h["descripcion"].tolist(),
+                key="sel_editar_excluidos",
+            )
+            if _sel_edit_excl != "— Seleccioná —":
+                _fila_sel = _activas_h[_activas_h["descripcion"] == _sel_edit_excl].iloc[0]
+                _excl_actuales_legajos = [l.strip() for l in str(_fila_sel.get("excluidos_legajos", "")).split(",") if l.strip()]
+                _excl_actuales_nombres = [_legajo_a_nombre.get(l, l) for l in _excl_actuales_legajos]
+                _nuevos_excl_nombres = st.multiselect(
+                    "Personas excluidas (siguen con horario normal)",
+                    nombres_lista, default=_excl_actuales_nombres, key="edit_excl_multiselect",
+                )
+                if st.button("💾 Guardar lista de excluidos", key="btn_guardar_excluidos"):
+                    _nuevos_legajos = [nombre_a_legajo[n] for n in _nuevos_excl_nombres if n in nombre_a_legajo]
+                    if editar_excluidos_horario(gc, _fila_sel["id"], _nuevos_legajos):
+                        st.success("✅ Lista de excluidos actualizada.")
+                        st.rerun()
+                    else:
+                        st.error(
+                            "❌ No se pudo actualizar. Si el Google Sheet no tiene la columna "
+                            "'excluidos_legajos' en la hoja 'config_horarios', agregala una vez."
+                        )
     else:
         st.caption(
             "No hay horarios especiales cargados todavía. Si el Google Sheet no tiene "
             "la hoja 'config_horarios', creála una vez con las columnas: id, planta, "
-            "desde, hasta, hora_fin, descripcion, activo, creado_por, timestamp."
+            "desde, hasta, hora_fin, descripcion, activo, excluidos_legajos, creado_por, timestamp."
         )
 
     # ── Contraseñas de acceso ───────────────────────────────────
