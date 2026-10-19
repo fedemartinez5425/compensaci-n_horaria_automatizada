@@ -6,6 +6,7 @@ No conoce Google Sheets ni Streamlit.
 """
 import pandas as pd
 from config import ALMUERZO_H
+from services.permisos_service import excepcion_horario_activa
 
 
 # ─────────────────────────────────────────────
@@ -33,30 +34,66 @@ def filtrar_rango_fecha(df: pd.DataFrame, desde, hasta, col="fecha") -> pd.DataF
 
 
 # ─────────────────────────────────────────────
+# ALMUERZO — se descuenta solo en días con jornada normal
+# ─────────────────────────────────────────────
+def almuerzo_del_dia(fecha, plantas, config_horarios=None, almuerzo_h: float = ALMUERZO_H) -> float:
+    """
+    Horas de almuerzo a descontar ese día en las métricas MOD.
+    Si ese día rige un horario especial (hoja config_horarios) para TODAS
+    las plantas con registros ese día, no se descuenta: la jornada
+    reducida (ej: 6 a 11) no tiene almuerzo. Si no hay horario especial,
+    se descuenta el almuerzo normal (ALMUERZO_H).
+    """
+    if config_horarios is None or config_horarios.empty:
+        return almuerzo_h
+    plantas = [p for p in set(plantas) if p]
+    if plantas and all(excepcion_horario_activa(config_horarios, p, fecha) for p in plantas):
+        return 0.0
+    return almuerzo_h
+
+
+def _resumen_diario(df: pd.DataFrame, col_horas: str, titulo: str,
+                    config_horarios, almuerzo_h: float) -> pd.DataFrame:
+    df = df.copy()
+    df["_dia"] = df["fecha"].dt.date
+    if "planta" not in df.columns:
+        df["planta"] = ""
+    resumen = (
+        df.groupby("_dia")
+        .agg(
+            total=(col_horas, "sum"),
+            plantas=("planta", lambda x: list(x.unique())),
+            personas=("nombre", "nunique"),
+            nombres=("nombre", lambda x: ", ".join(sorted(x.unique()))),
+        )
+        .reset_index()
+        .sort_values("_dia")   # orden cronológico real (no alfabético dd/mm/aaaa)
+    )
+    resumen["Almuerzo desc."] = [
+        almuerzo_del_dia(d, pl, config_horarios, almuerzo_h)
+        for d, pl in zip(resumen["_dia"], resumen["plantas"])
+    ]
+    resumen[titulo] = (resumen["total"] - resumen["Almuerzo desc."]).clip(lower=0).round(2)
+    resumen["Fecha"] = pd.to_datetime(resumen["_dia"]).dt.strftime("%d/%m/%Y")
+    return resumen.rename(columns={"personas": "Personas", "nombres": "Empleados"})[
+        ["Fecha", titulo, "Almuerzo desc.", "Personas", "Empleados"]
+    ].reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────
 # MOD — HORAS NO TRABAJADAS (todas)
 # ─────────────────────────────────────────────
-def resumen_mod_diario(df_mod: pd.DataFrame, almuerzo_h: float = ALMUERZO_H) -> pd.DataFrame:
+def resumen_mod_diario(df_mod: pd.DataFrame, config_horarios=None,
+                       almuerzo_h: float = ALMUERZO_H) -> pd.DataFrame:
     """
-    Agrupa por día: horas brutas − almuerzo.
+    Agrupa por día: horas brutas − almuerzo (0 en días con horario especial).
     Usa minutos_reales para decimales exactos.
     """
     if df_mod.empty:
         return pd.DataFrame()
     df = df_mod.copy()
-    df["fecha_str"] = df["fecha"].dt.strftime("%d/%m/%Y")
-    resumen = (
-        df.groupby("fecha_str")
-        .agg(
-            hs_brutas=("minutos_reales", lambda x: x.sum() / 60),
-            personas=("nombre", "nunique"),
-            nombres=("nombre", lambda x: ", ".join(sorted(x.unique()))),
-        )
-        .reset_index()
-    )
-    resumen["Hs. no trabajadas"] = (resumen["hs_brutas"] - almuerzo_h).clip(lower=0).round(2)
-    return resumen.rename(columns={
-        "fecha_str": "Fecha", "personas": "Personas", "nombres": "Empleados"
-    })[["Fecha", "Hs. no trabajadas", "Personas", "Empleados"]].sort_values("Fecha")
+    df["hs_brutas"] = df["minutos_reales"] / 60
+    return _resumen_diario(df, "hs_brutas", "Hs. no trabajadas", config_horarios, almuerzo_h)
 
 
 # ─────────────────────────────────────────────
@@ -81,26 +118,14 @@ def calc_hs_no_comp(row) -> float:
     return 0.0
 
 
-def resumen_mod_nc_diario(df_mod_nc: pd.DataFrame, almuerzo_h: float = ALMUERZO_H) -> pd.DataFrame:
-    """Resumen diario de horas MOD sin compensar, con descuento de almuerzo."""
+def resumen_mod_nc_diario(df_mod_nc: pd.DataFrame, config_horarios=None,
+                          almuerzo_h: float = ALMUERZO_H) -> pd.DataFrame:
+    """Resumen diario de horas MOD sin compensar, con descuento de almuerzo (0 en horario especial)."""
     if df_mod_nc.empty:
         return pd.DataFrame()
     df = df_mod_nc.copy()
-    df["hs_real"]   = df.apply(calc_hs_no_comp, axis=1)
-    df["fecha_str"] = df["fecha"].dt.strftime("%d/%m/%Y")
-    resumen = (
-        df.groupby("fecha_str")
-        .agg(
-            total_horas=("hs_real", "sum"),
-            personas=("nombre", "nunique"),
-            nombres=("nombre", lambda x: ", ".join(sorted(x.unique()))),
-        )
-        .reset_index()
-    )
-    resumen["Hs. no compensadas"] = (resumen["total_horas"] - almuerzo_h).clip(lower=0).round(2)
-    return resumen.rename(columns={
-        "fecha_str": "Fecha", "personas": "Personas", "nombres": "Empleados"
-    })[["Fecha", "Hs. no compensadas", "Personas", "Empleados"]].sort_values("Fecha")
+    df["hs_real"] = df.apply(calc_hs_no_comp, axis=1)
+    return _resumen_diario(df, "hs_real", "Hs. no compensadas", config_horarios, almuerzo_h)
 
 
 def detalle_mod_nc_por_persona(df_mod_nc: pd.DataFrame) -> pd.DataFrame:

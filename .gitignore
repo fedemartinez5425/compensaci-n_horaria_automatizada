@@ -2,3 +2,17 @@ __pycache__/
 *.pyc
 .streamlit/secrets.toml
 credentials.json
+
+# Entorno local y herramientas
+.venv/
+.pytest_cache/
+.kilo/
+
+# Datos reales (padrón, permisos): NUNCA al repo, es público
+*.xlsx
+*.xls
+*.csv
+
+# Copias y backups locales
+app copy.py
+*.rar

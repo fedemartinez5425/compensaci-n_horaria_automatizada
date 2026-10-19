@@ -25,6 +25,7 @@ from repositories.sheets_repo import (
     editar_excluidos_horario,
     actualizar_config_app,
 )
+from services.auth_service import hashear_password
 
 
 def _caption(text: str):
@@ -76,23 +77,37 @@ def render(
                 key="emp_gestion",
             )
             if emp_sel and emp_sel != "— Seleccioná —":
-                activo_vals = padron_planta[padron_planta["nombre"] == emp_sel]["activo"].values
-                activo_actual = str(activo_vals[0]).upper() if len(activo_vals) > 0 else "SI"
-                st.write(f"Estado actual: **{'✅ Activo' if activo_actual == 'SI' else '⛔ Inactivo'}**")
+                _fila_emp     = padron_planta[padron_planta["nombre"] == emp_sel].iloc[0]
+                legajo_emp    = str(_fila_emp["legajo"])
+                activo_actual = str(_fila_emp["activo"]).upper()
+                st.write(
+                    f"Legajo **{legajo_emp}** — Estado actual: "
+                    f"**{'✅ Activo' if activo_actual == 'SI' else '⛔ Inactivo'}**"
+                )
                 cg1, cg2 = st.columns(2)
                 with cg1:
                     lbl = "⛔ Marcar como Inactivo" if activo_actual == "SI" else "✅ Reactivar"
                     nuevo = "NO" if activo_actual == "SI" else "SI"
                     if st.button(lbl, use_container_width=True, key="btn_activo"):
-                        if marcar_activo(gc, emp_sel, nuevo):
+                        if marcar_activo(gc, legajo_emp, nuevo):
                             st.success(f"{'⛔ Inactivo' if nuevo == 'NO' else '✅ Reactivado'}: {emp_sel}")
                             st.rerun()
+                        else:
+                            st.error("❌ No se encontró el legajo en el padrón. Recargá la página.")
                 with cg2:
+                    # Baja definitiva: borra la fila y no se puede deshacer.
+                    # Para quien se fue de la empresa alcanza con Inactivo.
+                    _confirma_baja = st.checkbox(
+                        "Confirmo que quiero BORRAR a esta persona del padrón (no se puede deshacer)",
+                        key=f"conf_baja_{legajo_emp}",
+                    )
                     if st.button("🗑️ Dar de baja del padrón", use_container_width=True,
-                                  type="primary", key="btn_baja"):
-                        if eliminar_empleado_padron(gc, emp_sel):
+                                  disabled=not _confirma_baja, key="btn_baja"):
+                        if eliminar_empleado_padron(gc, legajo_emp):
                             st.success(f"🗑️ {emp_sel} eliminado.")
                             st.rerun()
+                        else:
+                            st.error("❌ No se encontró el legajo en el padrón. Recargá la página.")
         else:
             st.info("No hay empleados para esta planta.")
 
@@ -551,7 +566,10 @@ def render(
                         "horas_compensadas": hs_comp,
                         "observacion":       obs,
                         "registrado_por":    registra.strip(),
-                        "planta":            key_planta,
+                        # Planta de la persona según el padrón (no la de la
+                        # vista): desde "Total Empresa" quedaba planta="Total"
+                        # y la compensación no restaba en la vista de su planta.
+                        "planta":            planta_dict.get(leg_c, key_planta),
                         "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     })
                     st.success(f"✅ {nom_c} — {fmt_horas(hs_comp)} el {fecha_comp.strftime('%d/%m/%Y')}")
@@ -716,9 +734,9 @@ def render(
     st.divider()
     st.subheader("🔑 Cambiar contraseñas de acceso")
     _caption(
-        "Las contraseñas del Panel Guardia y del Panel RRHH se guardan acá, "
-        "no en el código — así cualquier persona de RRHH puede cambiarlas "
-        "sin depender de un programador."
+        "Las contraseñas del Panel Guardia y del Panel RRHH se guardan cifradas "
+        "en el Google Sheet, no en el código — así cualquier persona de RRHH puede "
+        "cambiarlas sin depender de un programador."
     )
     with st.expander("Cambiar una contraseña"):
         with st.form("form_cambiar_password", clear_on_submit=True):
@@ -740,7 +758,7 @@ def render(
                 else:
                     _clave_config = "password_guardia" if _cual_pw == "Panel Guardia" else "password_rrhh"
                     try:
-                        actualizar_config_app(gc, _clave_config, _nueva_pw.strip(), _quien_pw.strip())
+                        actualizar_config_app(gc, _clave_config, hashear_password(_nueva_pw), _quien_pw.strip())
                         st.success(
                             f"✅ Contraseña de {_cual_pw} actualizada. "
                             "Va a regir desde el próximo ingreso (las sesiones ya abiertas no se cierran solas)."

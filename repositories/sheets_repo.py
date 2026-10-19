@@ -4,6 +4,9 @@ repositories/sheets_repo.py
 Toda la comunicación con Google Sheets vive aquí.
 Para migrar a SharePoint/Excel: reemplazar este archivo únicamente.
 El resto de la app no conoce Google Sheets.
+
+Regla: toda escritura se hace por NOMBRE de columna (encabezados de la
+fila 1), nunca por posición, y toda búsqueda de personas es por legajo.
 """
 import pandas as pd
 import streamlit as st
@@ -11,13 +14,26 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 
-from config import SCOPES, MOTIVO_MAP, LIDERES_SJ
+from config import SCOPES, MOTIVO_MAP, LIDERES_SJ, MOTIVOS_LISTA
+
+# Motivos oficiales indexados en minúscula, para reconocerlos tal cual.
+_MOTIVOS_CANONICOS = {m.lower(): m for m in MOTIVOS_LISTA}
 
 
 def normalizar_motivo(raw: str) -> str:
+    """
+    1) Motivo oficial de MOTIVOS_LISTA → se devuelve EXACTO (antes se le
+       aplicaba .title() y "Renovación Carnet de Conducir" pasaba a
+       "...De Conducir", rompiendo el cupo fuera de tope y la política).
+    2) Variante histórica escrita a mano → MOTIVO_MAP.
+    3) Texto libre (motivo "Otro") → se deja prolijo con .title().
+    """
     if not raw or pd.isna(raw):
         return "Otro"
-    return MOTIVO_MAP.get(str(raw).strip().lower(), str(raw).strip().title())
+    clave = " ".join(str(raw).split()).lower()
+    if clave in _MOTIVOS_CANONICOS:
+        return _MOTIVOS_CANONICOS[clave]
+    return MOTIVO_MAP.get(clave, str(raw).strip().title())
 
 
 # ─────────────────────────────────────────────
@@ -34,6 +50,46 @@ def conectar() -> gspread.Client:
 @st.cache_resource(ttl=3600)
 def get_workbook(_gc: gspread.Client) -> gspread.Spreadsheet:
     return _gc.open_by_key(st.secrets["SHEET_ID"])
+
+
+# ─────────────────────────────────────────────
+# HELPERS DE ESCRITURA — siempre por nombre de columna, nunca por posición.
+# Así un cambio de orden de columnas en el Sheet (o una columna nueva) no
+# corrompe datos, y la migración a SharePoint Lists es directa.
+# ─────────────────────────────────────────────
+def _encabezados(ws) -> list[str]:
+    return [str(h).strip() for h in ws.row_values(1)]
+
+
+def _col(headers: list[str], nombre: str) -> int:
+    """Número de columna (1-based) de un encabezado. Error claro si no existe."""
+    if nombre not in headers:
+        raise ValueError(f"La hoja no tiene la columna '{nombre}' en la fila 1.")
+    return headers.index(nombre) + 1
+
+
+def ordenar_por_encabezado(fila: dict, headers: list[str], opcionales=()) -> tuple[list, list[str]]:
+    """
+    Arma la fila a escribir respetando el orden real de columnas del Sheet.
+    Columnas del Sheet que no vienen en `fila` quedan vacías.
+    Claves de `fila` sin columna en el Sheet: si son opcionales se descartan
+    (y se devuelven en la segunda posición para poder avisar); si no, ValueError.
+    """
+    faltan = [k for k in fila if k not in headers]
+    obligatorias = [k for k in faltan if k not in opcionales]
+    if obligatorias:
+        raise ValueError(
+            "La hoja no tiene estas columnas en la fila 1: "
+            + ", ".join(obligatorias) + ". Agregalas y volvé a intentar."
+        )
+    return [fila.get(h, "") for h in headers], faltan
+
+
+def _append_por_encabezado(ws, fila: dict, opcionales=(), headers=None) -> list[str]:
+    headers = headers or _encabezados(ws)
+    valores, descartadas = ordenar_por_encabezado(fila, headers, opcionales)
+    ws.append_row(valores, value_input_option="RAW")
+    return descartadas
 
 
 # ─────────────────────────────────────────────
@@ -128,8 +184,8 @@ def leer_config_app(_gc) -> dict:
     Hoja 'config_app' — configuración general clave/valor editable desde
     el Panel RRHH (hoy: las 2 contraseñas de acceso). Columnas esperadas:
     clave, valor, actualizado_por, timestamp.
-    Si la hoja todavía no existe, devuelve {} — la app cae de forma segura
-    a los valores por defecto de config.py (PASSWORD_DEFAULT/_RRHH_DEFAULT).
+    Si la hoja todavía no existe, devuelve {} — la app cae a las
+    contraseñas iniciales de secrets.toml (ver app.py).
     """
     try:
         ws = get_workbook(_gc).worksheet("config_app")
@@ -146,17 +202,20 @@ def actualizar_config_app(gc, clave: str, valor: str, actualizado_por: str) -> N
     Google Sheet — si no existe, tira WorksheetNotFound (se atrapa en la UI).
     """
     ws = get_workbook(gc).worksheet("config_app")
-    cell = ws.find(clave)
+    headers = _encabezados(ws)
+    cell = ws.find(clave, in_column=_col(headers, "clave"))
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if cell:
-        headers = ws.row_values(1)
-        ws.update_cell(cell.row, headers.index("valor") + 1, valor)
+        ws.update_cell(cell.row, _col(headers, "valor"), valor)
         if "actualizado_por" in headers:
-            ws.update_cell(cell.row, headers.index("actualizado_por") + 1, actualizado_por)
+            ws.update_cell(cell.row, _col(headers, "actualizado_por"), actualizado_por)
         if "timestamp" in headers:
-            ws.update_cell(cell.row, headers.index("timestamp") + 1, ts)
+            ws.update_cell(cell.row, _col(headers, "timestamp"), ts)
     else:
-        ws.append_row([clave, valor, actualizado_por, ts], value_input_option="RAW")
+        _append_por_encabezado(ws, {
+            "clave": clave, "valor": valor,
+            "actualizado_por": actualizado_por, "timestamp": ts,
+        }, opcionales=("actualizado_por", "timestamp"), headers=headers)
     leer_config_app.clear()
 
 
@@ -164,27 +223,37 @@ def actualizar_config_app(gc, clave: str, valor: str, actualizado_por: str) -> N
 # ESCRITURA
 # ─────────────────────────────────────────────
 def guardar_permiso(gc, fila: dict) -> None:
-    get_workbook(gc).worksheet("permisos").append_row(
-        list(fila.values()), value_input_option="RAW"
-    )
+    _append_por_encabezado(get_workbook(gc).worksheet("permisos"), fila)
     leer_permisos.clear()
 
 
 def guardar_compensacion(gc, fila: dict) -> None:
-    get_workbook(gc).worksheet("compensaciones").append_row(
-        list(fila.values()), value_input_option="RAW"
-    )
+    _append_por_encabezado(get_workbook(gc).worksheet("compensaciones"), fila)
     leer_compensaciones.clear()
 
 
 def agregar_empleado(gc, legajo: str, nombre: str, sector: str,
-                     planta: str, clasificacion: str = "", es_lider: str = "NO") -> None:
-    get_workbook(gc).worksheet("padron").append_row(
-        [legajo.strip(), nombre.upper().strip(), sector.strip(), "",
-         planta, "SI", clasificacion.strip(), es_lider],
-        value_input_option="RAW"
+                     planta: str, clasificacion: str = "", es_lider: str = "NO") -> list[str]:
+    """
+    Agrega una persona al padrón. Devuelve las columnas opcionales que no
+    se pudieron guardar porque la hoja no las tiene (ej: 'es_lider').
+    """
+    descartadas = _append_por_encabezado(
+        get_workbook(gc).worksheet("padron"),
+        {
+            "legajo":        legajo.strip(),
+            "nombre":        nombre.upper().strip(),
+            "sector":        sector.strip(),
+            "centro_costo":  "",
+            "planta":        planta,
+            "activo":        "SI",
+            "clasificacion": clasificacion.strip(),
+            "es_lider":      es_lider,
+        },
+        opcionales=("centro_costo", "clasificacion", "es_lider"),
     )
     leer_padron.clear()
+    return descartadas
 
 
 def corregir_permiso(
@@ -201,52 +270,59 @@ def corregir_permiso(
     Retorna True si encontró y modificó el registro.
     """
     ws = get_workbook(gc).worksheet("permisos")
-    cell = ws.find(id_permiso)
+    headers = _encabezados(ws)
+    cell = ws.find(id_permiso, in_column=_col(headers, "id"))
     if not cell:
         return False
-    row = cell.row
+    row       = cell.row
+    col_comp  = _col(headers, "compensa")
+    col_horas = _col(headers, "horas_redondeadas")
+    col_audit = _col(headers, "registrado_por")
     ts  = datetime.now().strftime("%d/%m/%Y %H:%M")
     if accion == "Anular registro":
         audit = f"{accion} por {usuario} — {razon} — {ts}"
-        ws.update_cell(row, 9,  "ANULADO")
-        ws.update_cell(row, 11, "0")
+        ws.update_cell(row, col_comp,  "ANULADO")
+        ws.update_cell(row, col_horas, "0")
     elif accion == "Cambiar compensa=SI a NO":
         audit = f"{accion} por {usuario} — {razon} — {ts}"
-        ws.update_cell(row, 9,  "NO")
-        ws.update_cell(row, 11, "0")
+        ws.update_cell(row, col_comp,  "NO")
+        ws.update_cell(row, col_horas, "0")
     elif accion == "Cambiar compensa=NO a SI":
         audit = f"{accion} por {usuario} — {razon} — {ts}"
-        ws.update_cell(row, 9, "SI")
+        ws.update_cell(row, col_comp, "SI")
     elif accion == "Corregir horas manualmente":
-        horas_previas = ws.cell(row, 11).value
+        horas_previas = ws.cell(row, col_horas).value
         audit = (
             f"Horas corregidas manualmente: {horas_previas}h → {nuevas_horas}h "
             f"por {usuario} — {razon} — {ts}"
         )
-        ws.update_cell(row, 11, str(nuevas_horas))
+        ws.update_cell(row, col_horas, str(nuevas_horas))
     else:
         return False
-    ws.update_cell(row, 12, audit)
+    ws.update_cell(row, col_audit, audit)
     leer_permisos.clear()
     return True
 
 
-def marcar_activo(gc, nombre_empleado: str, activo: str) -> bool:
-    """Cambia el campo activo de un empleado (SI/NO)."""
+def marcar_activo(gc, legajo: str, activo: str) -> bool:
+    """Cambia el campo 'activo' (SI/NO) de un empleado, buscándolo por legajo."""
     ws = get_workbook(gc).worksheet("padron")
-    celdas = ws.findall(nombre_empleado)
+    headers = _encabezados(ws)
+    celdas = ws.findall(str(legajo).strip(), in_column=_col(headers, "legajo"))
     if not celdas:
         return False
+    col_activo = _col(headers, "activo")
     for c in celdas:
-        ws.update_cell(c.row, 5, activo)
+        ws.update_cell(c.row, col_activo, activo)
     leer_padron.clear()
     return True
 
 
-def eliminar_empleado_padron(gc, nombre_empleado: str) -> bool:
+def eliminar_empleado_padron(gc, legajo: str) -> bool:
     """Elimina físicamente del padrón (usar solo para bajas definitivas)."""
     ws = get_workbook(gc).worksheet("padron")
-    celdas = ws.findall(nombre_empleado)
+    headers = _encabezados(ws)
+    celdas = ws.findall(str(legajo).strip(), in_column=_col(headers, "legajo"))
     if not celdas:
         return False
     for c in sorted(celdas, key=lambda x: x.row, reverse=True):
@@ -266,9 +342,15 @@ def verificar_compensacion_duplicada(comp_df: pd.DataFrame, legajo: str, fecha) 
 
 
 def guardar_excepcion_horario(gc, fila: dict) -> None:
-    """Agrega una excepción de horario nueva a la hoja config_horarios."""
-    get_workbook(gc).worksheet("config_horarios").append_row(
-        list(fila.values()), value_input_option="RAW"
+    """
+    Agrega una excepción de horario nueva a la hoja config_horarios.
+    Si se cargaron personas excluidas y la hoja no tiene la columna
+    'excluidos_legajos', falla con un mensaje claro en vez de correr
+    los valores de columna sin avisar.
+    """
+    opcionales = () if fila.get("excluidos_legajos") else ("excluidos_legajos",)
+    _append_por_encabezado(
+        get_workbook(gc).worksheet("config_horarios"), fila, opcionales=opcionales,
     )
     leer_config_horarios.clear()
 
@@ -279,12 +361,11 @@ def desactivar_excepcion_horario(gc, id_excepcion: str) -> bool:
     para dejar historial de qué horarios especiales rigieron y cuándo.
     """
     ws = get_workbook(gc).worksheet("config_horarios")
-    cell = ws.find(id_excepcion)
+    headers = _encabezados(ws)
+    cell = ws.find(id_excepcion, in_column=_col(headers, "id"))
     if not cell:
         return False
-    headers = ws.row_values(1)
-    col_activo = headers.index("activo") + 1
-    ws.update_cell(cell.row, col_activo, "NO")
+    ws.update_cell(cell.row, _col(headers, "activo"), "NO")
     leer_config_horarios.clear()
     return True
 
@@ -296,13 +377,12 @@ def editar_excluidos_horario(gc, id_excepcion: str, legajos_excluidos: list[str]
     normal") sin tener que borrar y recrear todo el horario especial.
     """
     ws = get_workbook(gc).worksheet("config_horarios")
-    cell = ws.find(id_excepcion)
-    if not cell:
-        return False
-    headers = ws.row_values(1)
+    headers = _encabezados(ws)
     if "excluidos_legajos" not in headers:
         return False  # hoja vieja sin esta columna — hay que agregarla a mano una vez
-    col = headers.index("excluidos_legajos") + 1
-    ws.update_cell(cell.row, col, ",".join(legajos_excluidos))
+    cell = ws.find(id_excepcion, in_column=_col(headers, "id"))
+    if not cell:
+        return False
+    ws.update_cell(cell.row, _col(headers, "excluidos_legajos"), ",".join(legajos_excluidos))
     leer_config_horarios.clear()
     return True

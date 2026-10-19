@@ -12,12 +12,11 @@ from datetime import time
 # ── App ────────────────────────────────────────────────────────
 APP_TITLE     = "GILDAN — Control de Permisos"
 APP_ICON      = "🏭"
-PASSWORD_DEFAULT      = "1234"   # fallback si config_app no existe todavía
-PASSWORD_RRHH_DEFAULT = "9876"   # ídem — se usa solo la primera vez
-# Las contraseñas reales se gestionan desde el Panel RRHH → "Cambiar
-# contraseñas de acceso", guardadas en la hoja 'config_app' del Google
-# Sheet. Estos valores de acá son solo el arranque inicial / red de
-# seguridad si esa hoja no existe o está vacía.
+# Contraseñas: NO van en el código (el repo es público). Las vigentes se
+# gestionan desde el Panel RRHH → "Cambiar contraseñas de acceso" y se
+# guardan hasheadas en la hoja 'config_app' del Google Sheet. Si esa hoja
+# está vacía, app.py usa como arranque PASSWORD_GUARDIA_INICIAL y
+# PASSWORD_RRHH_INICIAL de .streamlit/secrets.toml.
 
 # ── Turnos ─────────────────────────────────────────────────────
 HORA_FIN_TURNO      = time(15, 0)   # fin de turno general (para S/R)

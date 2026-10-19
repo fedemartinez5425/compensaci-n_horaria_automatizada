@@ -33,6 +33,21 @@ def _label_planta(planta_activa: str) -> str:
     return "Hola — Vista Total"
 
 
+def _registros_de_hoy(permisos_activos: pd.DataFrame):
+    st.subheader("Registros de hoy")
+    if not permisos_activos.empty:
+        hoy = permisos_activos[permisos_activos["fecha"].dt.date == date.today()]
+        if hoy.empty:
+            st.caption("Aún no hay registros hoy.")
+        else:
+            hs = hoy[["nombre", "hora_salida", "hora_entrada",
+                       "sin_retorno", "motivo", "compensa", "horas_redondeadas"]].copy()
+            hs.columns = ["Nombre", "Salida", "Entrada", "S/R", "Motivo", "Compensa", "Hs."]
+            st.dataframe(hs, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No hay registros aún.")
+
+
 def render(
     gc,
     planta_activa: str,
@@ -53,6 +68,18 @@ def render(
         help="Este panel es para uso exclusivo del guardia de seguridad."
     )
     st.divider()
+
+    # Desde "Total Empresa" no se carga: no hay una política de planta que
+    # aplicar (ni tope, ni motivos, ni Sin Retorno) y el registro quedaría
+    # con planta="Total", invisible en las vistas de San Juan y Bs. As.
+    if es_total:
+        st.info(
+            "Para cargar un permiso, elegí la planta (**Fábrica San Juan** o "
+            "**Casa Central Bs. As.**) en el menú de la izquierda. "
+            "Desde *Total Empresa* solo se pueden consultar los registros."
+        )
+        _registros_de_hoy(permisos_activos)
+        return
 
     # ── Búsqueda por nombre ──────────────────────────────────
     st.subheader("¿Quién sale?")
@@ -284,6 +311,25 @@ def render(
                 hrs_r   = redondear_horas(mins_r)
                 ent_str = hora_entrada.strftime("%H:%M")
 
+            # El tope de arriba se mostró con el año de HOY. Si el permiso es
+            # de otro año (ej: en enero se carga uno de diciembre), se vuelve
+            # a controlar contra el año real del permiso.
+            if compensa_pre == "SI" and legajo_resuelto and fecha_permiso.year != date.today().year:
+                _año_p = fecha_permiso.year
+                if es_sj and es_motivo_ext:
+                    if horas_fuera_tope_año(permisos_activos, legajo_resuelto, _año_p) >= TOPE_EXTRA_FUERA_TOPE:
+                        errores.append(
+                            f"En {_año_p} {nombre_resuelto} ya había usado las {TOPE_EXTRA_FUERA_TOPE}h "
+                            "del cupo especial. Marcá 'NO' en ¿Va a compensar?"
+                        )
+                else:
+                    _tope_p = obtener_tope("SI" if es_lider_persona else "NO", key_planta)
+                    if horas_comprometidas_año(permisos_activos, legajo_resuelto, _año_p) >= _tope_p:
+                        errores.append(
+                            f"En {_año_p} {nombre_resuelto} ya había alcanzado el tope de "
+                            f"{_tope_p:.0f}h. Marcá 'NO' en ¿Va a compensar?"
+                        )
+
             if compensa_pre == "SI" and excede_tope_por_permiso(hrs_r, key_planta):
                 errores.append(
                     f"Este permiso equivale a {fmt_horas(hrs_r)}, supera el máximo de "
@@ -322,18 +368,7 @@ def render(
 
     # ── Registros de hoy ─────────────────────────────────────
     st.divider()
-    st.subheader("Registros de hoy")
-    if not permisos_activos.empty:
-        hoy = permisos_activos[permisos_activos["fecha"].dt.date == date.today()]
-        if hoy.empty:
-            st.caption("Aún no hay registros hoy.")
-        else:
-            hs = hoy[["nombre", "hora_salida", "hora_entrada",
-                       "sin_retorno", "motivo", "compensa", "horas_redondeadas"]].copy()
-            hs.columns = ["Nombre", "Salida", "Entrada", "S/R", "Motivo", "Compensa", "Hs."]
-            st.dataframe(hs, use_container_width=True, hide_index=True)
-    else:
-        st.caption("No hay registros aún.")
+    _registros_de_hoy(permisos_activos)
 
     # ── Agregar empleado nuevo ───────────────────────────────
     st.divider()
@@ -365,7 +400,7 @@ def render(
             with na2:
                 nvo_cla = st.selectbox("Clasificación *", _clasifs)
             _planta_opts = ["Fábrica", "Casa Central"]
-            _planta_def  = 0 if es_sj else (1 if not es_total else 0)
+            _planta_def  = 0 if es_sj else 1
             nvo_planta   = st.selectbox("Planta *", _planta_opts, index=_planta_def)
             nvo_lider    = st.radio("¿Es líder?", ["NO", "SI"], horizontal=True)
 
@@ -378,13 +413,21 @@ def render(
                     err.append("El nombre es obligatorio.")
                 if nom_clean in nombre_a_legajo:
                     err.append(f"Ya existe '{nom_clean}'. Agregá segundo nombre o apellido.")
+                if not padron.empty and nvo_leg.strip() in set(padron["legajo"]):
+                    err.append(f"Ya existe una persona con legajo {nvo_leg.strip()} en el padrón.")
                 if err:
                     for e in err:
                         st.error(f"❌ {e}")
                 else:
                     try:
-                        agregar_empleado(gc, nvo_leg.strip(), nom_clean,
-                                         nvo_sec, nvo_planta, nvo_cla, nvo_lider)
+                        _sin_guardar = agregar_empleado(gc, nvo_leg.strip(), nom_clean,
+                                                        nvo_sec, nvo_planta, nvo_cla, nvo_lider)
                         st.success(f"✅ {nom_clean} agregado. Recargá la página.")
+                        if "es_lider" in _sin_guardar and nvo_lider == "SI":
+                            st.warning(
+                                "El padrón no tiene la columna 'es_lider', así que no quedó "
+                                "marcada como líder. Agregá esa columna en el Sheet o sumá el "
+                                "nombre a LIDERES_SJ en config.py."
+                            )
                     except Exception as e:
                         st.error(f"❌ Error: {e}")

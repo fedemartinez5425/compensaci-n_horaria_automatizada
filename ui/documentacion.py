@@ -10,7 +10,7 @@ from config import (
     MOTIVOS_COMPENSAN_SJ, MOTIVOS_COMPENSAN_LIDERES_SJ,
     MOTIVOS_COMPENSAN_BSAS, MOTIVOS_LISTA, MOTIVOS_FUERA_TOPE,
     LIDERES_SJ, TOPE_HORAS_NORMAL, TOPE_HORAS_LIDER, TOPE_EXTRA_FUERA_TOPE,
-    ALMUERZO_H,
+    ALMUERZO_H, HORA_FIN_TURNO, TOPE_HORAS_BSAS, TOPE_HORAS_POR_PERMISO_BSAS,
 )
 
 
@@ -62,8 +62,27 @@ Toda ausencia parcial se convierte a horas enteras con esta regla:
             "⚠️ **Caso borde:** 270 min = 4.5h exactas → redondea a **5h**. "
             "Para auditar, revisá la columna 'Minutos reales' en el Detalle de permisos del Panel RRHH."
         )
-        st.markdown("**Sin Retorno (S/R):** se calcula contra fin de turno (15:00 hs).")
-        st.code("Minutos ausente = (15:00 − hora_salida) × 60\nEj: salida 10:00 → 300 min → 5h", language="text")
+        _hf = HORA_FIN_TURNO.strftime("%H:%M")
+        st.markdown(
+            f"**Sin Retorno (S/R) — solo San Juan:** se calcula contra el fin de turno "
+            f"vigente ese día. Por defecto **{_hf} hs**; si RRHH cargó un **horario especial** "
+            "(Panel RRHH → Horarios especiales, ej: reducción horaria) para esa fecha, se usa "
+            "ese horario, salvo para las personas excluidas de ese horario especial."
+        )
+        st.code(
+            "Minutos ausente = (fin_de_turno_vigente − hora_salida) × 60\n"
+            f"Ej: horario normal, salida 10:00 → {_hf} → 300 min → 5h\n"
+            "Ej: horario especial 11:00, salida 10:00 → 60 min → 1h",
+            language="text",
+        )
+        st.info(
+            "**Bs. As.:** 'Sin retorno' es solo una etiqueta — no fuerza ningún horario. "
+            "El guardia carga la hora real en que la persona terminó su jornada."
+        )
+        st.caption(
+            "Un horario especial NO recalcula permisos ya cargados: si se activa tarde, "
+            "los Sin Retorno del período se corrigen desde 'Corregir o anular un permiso'."
+        )
 
     # ── 2. Saldo pendiente ────────────────────────────────────
     with st.expander("💰 2. Cálculo de saldo pendiente por persona", expanded=False):
@@ -85,13 +104,23 @@ Una deuda de febrero puede compensarse en mayo. Eso es correcto y esperado.
 Cada empleada tiene un límite anual de horas que puede comprometer para compensar.
 Al alcanzar ese límite, el sistema **fuerza No compensa** automáticamente.
 
+**Fábrica San Juan (RR.HH. 020):**
 - Empleada normal: **{TOPE_HORAS_NORMAL}h / año**
 - Líder: **{TOPE_HORAS_LIDER}h / año**
-- Año calendario: resetea el **1° de enero**.
+
+**Casa Central Bs. As. (convenio 036):**
+- **{TOPE_HORAS_BSAS}h / año** para todos (no distingue líder).
+- Máximo **{TOPE_HORAS_POR_PERMISO_BSAS}h por permiso individual**: si un permiso supera
+  ese máximo y se marca que compensa, el sistema no lo deja guardar (hay que dividir el
+  trámite o marcar No compensa).
+
+Año calendario: resetea el **1° de enero**. El tope se controla contra el año de la
+**fecha del permiso**.
 """)
         st.code(
-            f"Tope_anual =  {TOPE_HORAS_NORMAL}h  (normal)\n"
-            f"Tope_anual = {TOPE_HORAS_LIDER}h  (líder)\n\n"
+            f"Tope_anual =  {TOPE_HORAS_NORMAL}h  (San Juan, normal)\n"
+            f"Tope_anual = {TOPE_HORAS_LIDER}h  (San Juan, líder)\n"
+            f"Tope_anual = {TOPE_HORAS_BSAS}h  (Bs. As., todos)\n\n"
             "Consumido_año = Σ horas_redondeadas donde:\n"
             "  • compensa = 'SI'\n"
             "  • año(fecha) = año actual\n"
@@ -121,7 +150,7 @@ Al alcanzar ese límite, el sistema **fuerza No compensa** automáticamente.
     with st.expander(f"⭐ 4. Cupo extra de {TOPE_EXTRA_FUERA_TOPE}h — motivos especiales", expanded=False):
         st.markdown(f"""
 Tres motivos tienen un cupo **independiente** de **{TOPE_EXTRA_FUERA_TOPE}h anuales**
-que NO descuenta del tope normal (8h o 16h).
+que NO descuenta del tope normal ({TOPE_HORAS_NORMAL}h o {TOPE_HORAS_LIDER}h). Solo San Juan.
 
 Una persona con el tope agotado puede seguir compensando por estos motivos
 hasta consumir las {TOPE_EXTRA_FUERA_TOPE}h extra del cupo especial.
@@ -185,7 +214,8 @@ hasta consumir las {TOPE_EXTRA_FUERA_TOPE}h extra del cupo especial.
             "Qué significa": [
                 "Empleada. Las líderes tienen 👑 al lado.",
                 "Categoría laboral: HOURLY DIRECT, HOURLY INDIRECT, EXEMPT, NON EXEMPT.",
-                f"Tope máximo anual: {TOPE_HORAS_NORMAL}h normal, {TOPE_HORAS_LIDER}h líder.",
+                f"Tope máximo anual: SJ {TOPE_HORAS_NORMAL}h normal / {TOPE_HORAS_LIDER}h líder; "
+                f"Bs. As. {TOPE_HORAS_BSAS}h.",
                 "Horas pendientes de compensar (acumuladas, todas las fechas).",
                 "Horas con compensa=SI en el año actual. Resetea 1° de enero.",
                 "Cuánto le queda = Base anual − Consumido año (mínimo 0).",
@@ -206,7 +236,10 @@ hasta consumir las {TOPE_EXTRA_FUERA_TOPE}h extra del cupo especial.
 ```
 Horas del día = (Σ minutos_reales ÷ 60) − {ALMUERZO_H}h almuerzo
 ```
-Usa `minutos_reales` (decimal exacto, sin redondeo). Se descuentan **{ALMUERZO_H}h de almuerzo** por día.
+Usa `minutos_reales` (decimal exacto, sin redondeo). Se descuentan **{ALMUERZO_H}h de almuerzo**
+por cada día con registros MOD (una sola vez por día, sin importar cuántas personas).
+Los días con **horario especial** vigente (ej: reducción horaria 6 a 11) **no** tienen almuerzo:
+ese día se descuentan 0h.
 
 **Horas MOD sin compensar:** mismo filtro MOD pero solo donde `compensa = NO`.
 Es tiempo de producción perdido que **no se recupera** — insumo para evaluar prima de producción.

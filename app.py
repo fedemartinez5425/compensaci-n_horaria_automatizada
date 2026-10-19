@@ -14,11 +14,12 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 
-from config import APP_TITLE, APP_ICON, PLANTAS, PASSWORD_DEFAULT, PASSWORD_RRHH_DEFAULT
+from config import APP_TITLE, APP_ICON, PLANTAS
 from repositories.sheets_repo import (
     conectar, leer_padron, leer_permisos, leer_compensaciones,
     leer_config_horarios, leer_config_app,
 )
+from services.auth_service import verificar_password
 from ui import guardia, rrhh, analisis, documentacion
 
 # ─────────────────────────────────────────────
@@ -44,8 +45,17 @@ except Exception as e:
     st.error(f"No se pudo conectar con Google Sheets: {e}")
     st.stop()
 
-PASSWORD      = _config_app.get("password_guardia", PASSWORD_DEFAULT)
-PASSWORD_RRHH = _config_app.get("password_rrhh", PASSWORD_RRHH_DEFAULT)
+# Contraseña vigente: la de config_app (hasheada, se cambia desde el Panel
+# RRHH). Si todavía no hay ninguna cargada, la de arranque de secrets.toml.
+PASSWORD      = _config_app.get("password_guardia") or st.secrets.get("PASSWORD_GUARDIA_INICIAL", "")
+PASSWORD_RRHH = _config_app.get("password_rrhh")    or st.secrets.get("PASSWORD_RRHH_INICIAL", "")
+
+if not PASSWORD or not PASSWORD_RRHH:
+    st.error(
+        "No hay contraseñas de acceso configuradas. Cargá PASSWORD_GUARDIA_INICIAL "
+        "y PASSWORD_RRHH_INICIAL en los secrets de la app (o en la hoja 'config_app')."
+    )
+    st.stop()
 
 # ─────────────────────────────────────────────
 # LOGIN
@@ -60,7 +70,7 @@ def check_login():
         st.write("Ingresá la contraseña para acceder.")
         clave = st.text_input("Contraseña", type="password", placeholder="••••")
         if st.button("Ingresar", use_container_width=True, type="primary"):
-            if clave == PASSWORD:
+            if verificar_password(clave, PASSWORD):
                 st.session_state.autenticado = True
                 st.rerun()
             else:
@@ -76,7 +86,7 @@ def check_login_rrhh():
         st.warning("🔒 Sección restringida — RR.HH.")
         clave = st.text_input("Contraseña RR.HH.", type="password", placeholder="••••", key="pw_rrhh")
         if st.button("Ingresar", key="btn_rrhh"):
-            if clave == PASSWORD_RRHH:
+            if verificar_password(clave, PASSWORD_RRHH):
                 st.session_state.rrhh_autenticado = True
                 st.rerun()
             else:
@@ -115,7 +125,10 @@ with st.sidebar:
     )
     st.divider()
     if st.button("🔒 Cerrar sesión", use_container_width=True):
+        # Cierra TODO: si solo se reseteaba 'autenticado', quien entraba
+        # después con la clave de guardia seguía teniendo acceso a RRHH.
         st.session_state.autenticado = False
+        st.session_state.rrhh_autenticado = False
         st.rerun()
 
 # ─────────────────────────────────────────────
@@ -209,6 +222,7 @@ elif pagina == "📊 Análisis":
         comp_activos=comp_activos,
         sector_dict=sector_dict,
         clasif_dict=clasif_dict,
+        config_horarios=config_horarios,
     )
 
 elif pagina == "📖 Cómo se calcula":

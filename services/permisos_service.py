@@ -4,6 +4,7 @@ services/permisos_service.py
 Toda la lógica de negocio de permisos y compensaciones.
 No conoce Google Sheets ni Streamlit.
 """
+import secrets
 import pandas as pd
 from datetime import date, datetime, time
 from config import (
@@ -54,7 +55,13 @@ def fmt_horas(h: float) -> str:
 
 
 def generar_id(prefijo: str = "P") -> str:
-    return f"{prefijo}{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    """
+    Prefijo + fecha/hora + milisegundos + 8 caracteres al azar.
+    Los milisegundos y el sufijo evitan IDs repetidos si dos personas
+    guardan en el mismo segundo (ej: guardia SJ y Bs. As. a la vez).
+    """
+    ahora = datetime.now()
+    return f"{prefijo}{ahora.strftime('%Y%m%d%H%M%S')}{ahora.microsecond // 1000:03d}{secrets.token_hex(4)}"
 
 
 # ─────────────────────────────────────────────
@@ -150,28 +157,38 @@ def excede_tope_por_permiso(horas: float, planta_key: str) -> bool:
     return False
 
 
+def _es_fuera_tope(permisos_df: pd.DataFrame) -> pd.Series:
+    """
+    Motivo con cupo extra fuera de tope. El cupo extra es SOLO de San Juan:
+    en Bs. As. esos motivos (si aparecen, ej: importación histórica) cuentan
+    contra el tope normal de 10h.
+    """
+    es_sj = (permisos_df["planta"] == "Fábrica") if "planta" in permisos_df.columns else True
+    return permisos_df["motivo"].isin(MOTIVOS_FUERA_TOPE) & es_sj
+
+
 def horas_comprometidas_año(permisos_df: pd.DataFrame, legajo: str, año: int) -> float:
-    """Horas con compensa=SI en el año (excluye motivos fuera de tope)."""
+    """Horas con compensa=SI en el año (excluye motivos fuera de tope de San Juan)."""
     if permisos_df.empty:
         return 0.0
     p = permisos_df[
         (permisos_df["legajo"] == legajo) &
         (permisos_df["compensa"] == "SI") &
         (permisos_df["fecha"].dt.year == año) &
-        (~permisos_df["motivo"].isin(MOTIVOS_FUERA_TOPE))
+        (~_es_fuera_tope(permisos_df))
     ]
     return float(p["horas_redondeadas"].sum()) if not p.empty else 0.0
 
 
 def horas_fuera_tope_año(permisos_df: pd.DataFrame, legajo: str, año: int) -> float:
-    """Horas del cupo extra (motivos fuera de tope) en el año."""
+    """Horas del cupo extra (motivos fuera de tope, solo San Juan) en el año."""
     if permisos_df.empty:
         return 0.0
     p = permisos_df[
         (permisos_df["legajo"] == legajo) &
         (permisos_df["compensa"] == "SI") &
         (permisos_df["fecha"].dt.year == año) &
-        (permisos_df["motivo"].isin(MOTIVOS_FUERA_TOPE))
+        (_es_fuera_tope(permisos_df))
     ]
     return float(p["horas_redondeadas"].sum()) if not p.empty else 0.0
 

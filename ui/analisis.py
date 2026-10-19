@@ -49,8 +49,12 @@ def _ayuda(titulo: str, contenido: str):
 
 
 def _caption(text: str):
+    # Dentro de un <p> HTML el markdown no se procesa: se convierte **x** a <b>x</b>
+    # (si no, la negrita se veía con los asteriscos).
+    import re
+    text_html = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
     st.markdown(
-        f'<p style="color:#2C3E50;font-size:0.95rem;margin-top:-4px;">{text}</p>',
+        f'<p style="color:#2C3E50;font-size:0.95rem;margin-top:-4px;">{text_html}</p>',
         unsafe_allow_html=True,
     )
 
@@ -65,6 +69,7 @@ def render(
     comp_activos: pd.DataFrame,
     sector_dict: dict,
     clasif_dict: dict,
+    config_horarios: pd.DataFrame = None,
 ):
     st.title(f"📊 Análisis de Permisos — {planta_activa}")
     _caption("Panel analítico. Cada sección tiene sus propios filtros y puede explorarse de forma independiente.")
@@ -415,6 +420,9 @@ Horas del día = (Σ minutos_reales de ese día ÷ 60) − 0.5h de almuerzo
 ```
 Se usa `minutos_reales` (decimal exacto) y no el redondeo, para mayor precisión.
 
+**Horario especial** (ej: reducción horaria 6 a 11): esos días **no hay almuerzo**, así que
+no se descuentan las 0.5h. La columna *Almuerzo desc.* muestra qué se descontó cada día.
+
 **Para qué sirve:** la jefa de calidad usa este número para calcular el impacto
 real en la producción del día. Cada hora aquí es una hora de producción no ejecutada.
         """
@@ -438,7 +446,7 @@ real en la producción del día. Cada hora aquí es una hora de producción no e
         if df_mod.empty:
             st.info(f"No hay permisos MOD en {mod_label}.")
         else:
-            res_mod = resumen_mod_diario(df_mod)
+            res_mod = resumen_mod_diario(df_mod, config_horarios)
             total_mod = res_mod["Hs. no trabajadas"].sum()
             tm1, tm2, tm3 = st.columns(3)
             tm1.metric("Total hs. no trabajadas (MOD)", f"{total_mod:.2f}h")
@@ -459,7 +467,10 @@ real en la producción del día. Cada hora aquí es una hora de producción no e
             fig_mod.update_layout(**_LAYOUT_BASE, height=260,
                                   xaxis_title="", yaxis_title="Horas no trabajadas")
             st.plotly_chart(fig_mod, use_container_width=True)
-            _caption(f"Período: {mod_label}. Descuento de {ALMUERZO_H}h almuerzo por día. Decimales exactos.")
+            _caption(
+                f"Período: {mod_label}. Descuento de {ALMUERZO_H}h almuerzo por día "
+                "(0h los días con horario especial, sin almuerzo). Decimales exactos."
+            )
 
     st.divider()
 
@@ -490,7 +501,7 @@ Una persona que salió 2h y no compensa generó 2h de producción perdida neta.
         if df_mod_nc.empty:
             st.success(f"✅ No hay permisos MOD sin compensar en {mod_label}.")
         else:
-            res_nc = resumen_mod_nc_diario(df_mod_nc)
+            res_nc = resumen_mod_nc_diario(df_mod_nc, config_horarios)
             total_nc = res_nc["Hs. no compensadas"].sum()
             tn1, tn2, tn3 = st.columns(3)
             tn1.metric("Total hs. MOD no compensadas", f"{total_nc:.2f}h")
