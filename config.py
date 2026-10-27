@@ -49,16 +49,8 @@ TOPE_HORAS_BSAS            = 10   # tope anual, sin distinción de líder
 TOPE_HORAS_POR_PERMISO_BSAS = 4   # máximo de horas compensables por permiso individual
 
 # ── Líderes SJ ────────────────────────────────────────────────
-# Nombres exactos del padrón. Sincronizar si cambia el padrón.
-LIDERES_SJ = {
-    "SANTANA, SANDRA BETTINA",
-    "RODRIGUEZ, PATRICIA SOLEDAD",
-    "TEJADA, DALINDA MATILDE",
-    "FLORES FRIAS, CELIA ROMINA",
-    "MURO, LILIANA MABEL",
-    "CERDA, CLAUDIA DEL VALLE",
-    "OLIVA ZEBALLOS, ANALIA",
-}
+# Se marcan en la columna 'es_lider' (SI/NO) de la hoja padron, nunca en
+# el código: el repo es público y no lleva nombres de personas.
 
 # ── Motivos ────────────────────────────────────────────────────
 MOTIVOS_LISTA = [

@@ -227,4 +227,4 @@ elif pagina == "📊 Análisis":
 
 elif pagina == "📖 Cómo se calcula":
     check_login_rrhh()
-    documentacion.render()
+    documentacion.render(padron_activos)

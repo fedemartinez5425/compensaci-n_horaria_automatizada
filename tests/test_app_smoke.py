@@ -228,6 +228,30 @@ def test_cambiar_password_queda_hasheada(wb):
     assert fila["valor"].startswith("pbkdf2_sha256$") and "otra-clave" not in fila["valor"]
 
 
+def test_rrhh_avisa_si_san_juan_no_tiene_lideres(wb):
+    at = _login(_app(wb))
+    at = _ir(at, "Fábrica San Juan", "🟢 Panel RRHH")
+    at = _login_rrhh(at)
+    assert any("es_lider" in w.value for w in at.warning)
+
+
+def test_lider_marcado_en_padron_tiene_tope_16_y_figura_en_documentacion(wb):
+    from tests.fake_sheet import HEADERS_PADRON
+    wb.hojas["padron"] = FakeWorksheet(HEADERS_PADRON + ["es_lider"], [
+        ["2001", "PEREZ, ANA", "COSTURA SAN JUAN", "", "Fábrica", "SI", "HOURLY DIRECT", "SI"],
+        ["2002", "GOMEZ, LUIS", "CALIDAD", "", "Fábrica", "SI", "NON EXEMPT", "NO"],
+    ])
+    at = _login(_app(wb))
+    at = _ir(at, "Fábrica San Juan", "🔵 Panel Guardia")
+    at.selectbox[0].select("PEREZ, ANA")
+    at = at.run()
+    assert any("/ 16h" in c.value and "líder" in c.value for c in at.caption)
+    at = _ir(at, "Fábrica San Juan", "📖 Cómo se calcula")
+    at = _login_rrhh(at)
+    assert any("PEREZ, ANA" in m.value for m in at.markdown)
+    assert not any("es_lider" in w.value for w in at.warning)
+
+
 @pytest.mark.parametrize("pagina", ["🔵 Panel Guardia", "🟢 Panel RRHH", "📊 Análisis", "📖 Cómo se calcula"])
 @pytest.mark.parametrize("planta", ["Fábrica San Juan", "Casa Central Bs. As.", "🏢 Total Empresa"])
 def test_todas_las_pantallas_cargan_sin_error(wb, planta, pagina):

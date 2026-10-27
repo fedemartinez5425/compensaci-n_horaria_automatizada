@@ -127,6 +127,15 @@ def render(
     with cf3:
         modo = st.radio("Vista:", ["Solo este mes", "Saldo acumulado total"], horizontal=True)
 
+    if key_planta in ("Fábrica", "Total") and not padron_activos.empty:
+        _sj = padron_activos[padron_activos["planta"] == "Fábrica"]
+        if not _sj.empty and not (_sj["es_lider"] == "SI").any():
+            st.warning(
+                "⚠️ Ninguna persona de San Juan figura como líder: todas tienen tope de "
+                f"{obtener_tope('NO')}h. Marcá **SI** en la columna **es_lider** de la hoja "
+                "*padron* para las líderes (tope 16h)."
+            )
+
     if permisos_activos.empty:
         st.warning("No hay permisos cargados para esta planta.")
         return

@@ -191,3 +191,22 @@ def test_editar_horario_columna_faltante_no_escribe_nada(wb):
 def test_editar_horario_campo_no_editable(wb):
     with pytest.raises(ValueError, match="planta"):
         repo.editar_excepcion_horario(None, "H1", {"planta": "Todas"}, "Ailen")
+
+
+# ── Líderes: solo desde la columna es_lider del padrón ───────
+def test_padron_sin_columna_es_lider_nadie_es_lider(wb):
+    repo.leer_padron.clear()
+    df = repo.leer_padron(None)
+    assert set(df["es_lider"]) == {"NO"}
+
+
+def test_padron_es_lider_normaliza_valores(wb):
+    from tests.fake_sheet import HEADERS_PADRON
+    wb.hojas["padron"] = FakeWorksheet(HEADERS_PADRON + ["es_lider"], [
+        ["2001", "PEREZ, ANA", "COSTURA", "", "Fábrica", "SI", "HOURLY DIRECT", " si "],
+        ["2002", "GOMEZ, LUIS", "CALIDAD", "", "Fábrica", "SI", "NON EXEMPT", ""],
+        ["2003", "DIAZ, EVA", "CALIDAD", "", "Fábrica", "SI", "NON EXEMPT", "X"],
+    ])
+    repo.leer_padron.clear()
+    df = repo.leer_padron(None)
+    assert list(df["es_lider"]) == ["SI", "NO", "NO"]

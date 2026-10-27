@@ -227,7 +227,7 @@ horas_compensadas (N1), observacion (ML), registrado_por (T), planta (E: Fábric
 **`padron`**: Title (= legajo, **único**: Configuración de columna → "Exigir valores únicos"),
 nombre (T), sector (T), centro_costo (T), planta (E: Fábrica, Casa Central), activo (E: SI, NO),
 clasificacion (E: HOURLY DIRECT, HOURLY INDIRECT, EXEMPT, NON EXEMPT — confirmar lista con RRHH),
-**es_lider (E: SI, NO)** — crearla ya: permite sacar del código la lista de líderes (ver 8.3).
+**es_lider (E: SI, NO)** — define quién tiene tope de líder (ya no hay nombres en el código).
 
 **`config_horarios`**: Title (= id), planta (E: Fábrica, Casa Central, Todas), desde (T), hasta (T),
 hora_fin (T `HH:MM`), descripcion (T), activo (E: SI, NO), excluidos_legajos (ML), creado_por (ML,
@@ -430,8 +430,9 @@ y el login. Orden propuesto:
 - Se borra el manejo de contraseñas (`auth_service.py`, claves en `config_app`).
 
 ### 8.3 Limpieza que va a pedir una auditoría
-- **Sacar los nombres de líderes de `config.py`** (`LIDERES_SJ`): pasan a la columna `es_lider` del padrón
-  (la app ya la soporta; la lista del código es solo un respaldo). Hoy son nombres reales en un repo público.
+- ✅ Hecho (27/10/2026): los líderes salieron de `config.py` y se marcan solo con la columna `es_lider`
+  del padrón. Los nombres siguen en el historial de git de GitHub: por eso conviene la opción B de 6.1
+  (foto limpia sin historial) al llevar el código a Azure Repos.
 - Fijar versiones de todas las dependencias (hoy solo Streamlit está fija): generar un
   `requirements.txt` con versiones exactas (`pip freeze` filtrado o `pip-tools`) y probarlo en el pipeline.
 - Quitar `gspread`/`google-auth` cuando ya no se use Sheets.

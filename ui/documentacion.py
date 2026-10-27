@@ -9,7 +9,7 @@ import pandas as pd
 from config import (
     MOTIVOS_COMPENSAN_SJ, MOTIVOS_COMPENSAN_LIDERES_SJ,
     MOTIVOS_COMPENSAN_BSAS, MOTIVOS_LISTA, MOTIVOS_FUERA_TOPE,
-    LIDERES_SJ, TOPE_HORAS_NORMAL, TOPE_HORAS_LIDER, TOPE_EXTRA_FUERA_TOPE,
+    TOPE_HORAS_NORMAL, TOPE_HORAS_LIDER, TOPE_EXTRA_FUERA_TOPE,
     ALMUERZO_H, HORA_FIN_TURNO, HORA_FIN_TURNO_BSAS, TOPE_HORAS_BSAS, TOPE_HORAS_POR_PERMISO_BSAS,
 )
 
@@ -23,7 +23,7 @@ def _caption(text: str):
     )
 
 
-def render():
+def render(padron_activos: pd.DataFrame | None = None):
     st.title("📖 Cómo se calcula todo en esta app")
     _caption(
         "Documentación de referencia para entender la lógica del sistema. "
@@ -152,8 +152,15 @@ Año calendario: resetea el **1° de enero**. El tope se controla contra el año
             ],
         }), use_container_width=True, hide_index=True)
 
-        st.markdown("**Líderes con tope de 16h/año:**")
-        for lider in sorted(LIDERES_SJ):
+        st.markdown(
+            f"**Líderes con tope de {TOPE_HORAS_LIDER}h/año:** son las personas de San Juan con "
+            "`es_lider = SI` en la hoja *padron* (en los reportes llevan 👑)."
+        )
+        _lideres = []
+        if padron_activos is not None and not padron_activos.empty and "es_lider" in padron_activos:
+            _lideres = sorted(padron_activos[(padron_activos["es_lider"] == "SI")
+                                             & (padron_activos["planta"] == "Fábrica")]["nombre"])
+        for lider in _lideres:
             st.markdown(f"- {lider}")
 
     # ── 4. Cupo extra fuera de tope ───────────────────────────

@@ -88,7 +88,8 @@ y los tests de `tests/test_permisos_service.py` en el mismo cambio.
 - "Médico turno mañana" compensa en SJ; "Médico propio" en SJ solo para líderes.
 
 ### 4. Topes anuales — `obtener_tope()`
-- San Juan: **8h** normal / **16h** líder (`es_lider == "SI"`, con fallback a `LIDERES_SJ`).
+- San Juan: **8h** normal / **16h** líder (`es_lider == "SI"` en la hoja `padron`; sin columna,
+  vacío u otro valor = no líder). Nunca listar personas en el código (repo público).
 - Bs. As.: **10h** fijas sin distinguir líder + máximo **4h por permiso individual**
   (`excede_tope_por_permiso`; si se supera, el guardado se **bloquea**, no se recorta).
 - Año calendario (resetea el 1° de enero), controlado contra el año de la **fecha del permiso**.
@@ -131,7 +132,7 @@ y los tests de `tests/test_permisos_service.py` en el mismo cambio.
   - `compensaciones`: `id, fecha_compensacion, legajo, nombre, horas_compensadas,
     observacion, registrado_por, planta, timestamp`.
   - `padron`: `legajo, nombre, sector, centro_costo, planta, activo, clasificacion`
-    (`es_lider` es opcional; si no está, se usa `LIDERES_SJ`).
+    + `es_lider` (opcional para no romper hojas viejas, pero sin ella nadie es líder).
   - `config_horarios`: `id, planta, desde, hasta, hora_fin, descripcion, activo,
     excluidos_legajos, creado_por, timestamp, dias_semana, solo_legajos` (las tres opcionales
     pueden faltar si están vacías; se agregan al final de la hoja).

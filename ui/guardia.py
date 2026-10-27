@@ -429,8 +429,8 @@ def render(
                         if "es_lider" in _sin_guardar and nvo_lider == "SI":
                             st.warning(
                                 "El padrón no tiene la columna 'es_lider', así que no quedó "
-                                "marcada como líder. Agregá esa columna en el Sheet o sumá el "
-                                "nombre a LIDERES_SJ en config.py."
+                                "marcada como líder. Agregá esa columna en la hoja 'padron' "
+                                "y poné SI en su fila."
                             )
                     except Exception as e:
                         st.error(f"❌ Error: {e}")

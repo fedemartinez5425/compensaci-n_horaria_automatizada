@@ -14,7 +14,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
 
-from config import SCOPES, MOTIVO_MAP, LIDERES_SJ, MOTIVOS_LISTA
+from config import SCOPES, MOTIVO_MAP, MOTIVOS_LISTA
 
 # Motivos oficiales indexados en minúscula, para reconocerlos tal cual.
 _MOTIVOS_CANONICOS = {m.lower(): m for m in MOTIVOS_LISTA}
@@ -109,14 +109,13 @@ def leer_padron(_gc) -> pd.DataFrame:
     df["planta"]        = df["planta"].astype(str).str.strip()
     df["sector"]        = df["sector"].astype(str).str.strip() if "sector" in df.columns else ""
     df["clasificacion"] = df["clasificacion"].astype(str).str.strip() if "clasificacion" in df.columns else ""
+    # Líder = 'SI' en la columna es_lider. Sin columna, vacío o cualquier otro
+    # valor → 'NO' (el Panel RRHH avisa si en San Juan no hay ningún líder).
     if "es_lider" not in df.columns:
-        df["es_lider"] = df["nombre"].apply(lambda n: "SI" if n in LIDERES_SJ else "NO")
+        df["es_lider"] = "NO"
     else:
         df["es_lider"] = df["es_lider"].astype(str).str.strip().str.upper()
-        df["es_lider"] = df["es_lider"].where(
-            df["es_lider"].isin(["SI", "NO"]),
-            df["nombre"].apply(lambda n: "SI" if n in LIDERES_SJ else "NO")
-        )
+        df["es_lider"] = df["es_lider"].where(df["es_lider"] == "SI", "NO")
     return df
 
 
