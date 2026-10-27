@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(git reset --hard *)",
+      "Bash(git branch -D *)",
+      "PowerShell(git commit *)",
+      "PowerShell(git push *)",
+      "PowerShell(git merge *)",
+      "PowerShell(git rebase *)",
+      "PowerShell(git reset --hard *)",
+      "PowerShell(git branch -D *)",
+      "Read(./credentials.json)",
+      "Read(./.streamlit/secrets.toml)",
+      "Read(**/credentials*.json)",
+      "Edit(./.streamlit/secrets.toml)",
+      "Edit(./credentials.json)"
+    ]
+  }
+}

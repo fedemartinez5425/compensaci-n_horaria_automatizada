@@ -20,6 +20,13 @@ y calcula saldos. Los datos viven en un Google Sheet (gspread + cuenta de servic
 - **El repo es público.** Nunca commitear `secrets.toml`, `credentials.json` ni exportes del
   Sheet (`*.xlsx`, `*.csv`: padrón con nombres, legajos y motivos médicos). Están en `.gitignore`.
 - `app copy.py` y el `.rar` son backups viejos del monolito: no son código vivo.
+- `.claude/settings.json` bloquea `git commit/push/merge/rebase` y la lectura de credenciales.
+  No relajar esas reglas: el usuario commitea y mergea desde GitHub Desktop.
+- Para revisar o corregir datos reales: `tools/auditoria_excel.py` (solo lectura) y
+  `tools/aplicar_correcciones.py` (escribe una copia del exporte), ver `tools/README.md`.
+  Las correcciones las pega el usuario a mano en el Sheet, celda por celda.
+- `docs/MIGRACION_MICROSOFT.md`: plan de migración a SharePoint + Azure DevOps + App Service.
+  `tools/` y `docs/` no se deployan ni los importa la app.
 
 ## Arquitectura (respetarla)
 
@@ -36,6 +43,7 @@ No meter lógica de negocio en `ui/` ni llamadas a gspread fuera de `sheets_repo
 **Migración prevista:** SharePoint (Listas) + Azure DevOps + Azure App Service. Todo cambio en
 datos debe seguir aislado en `sheets_repo.py` (será reemplazado por un repo de SharePoint con las
 mismas funciones). En Azure, el login por contraseñas compartidas se reemplazará por Entra ID.
+Plan detallado en `docs/MIGRACION_MICROSOFT.md`.
 
 ---
 
