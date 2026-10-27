@@ -230,7 +230,8 @@ clasificacion (E: HOURLY DIRECT, HOURLY INDIRECT, EXEMPT, NON EXEMPT — confirm
 **es_lider (E: SI, NO)** — crearla ya: permite sacar del código la lista de líderes (ver 8.3).
 
 **`config_horarios`**: Title (= id), planta (E: Fábrica, Casa Central, Todas), desde (T), hasta (T),
-hora_fin (T `HH:MM`), descripcion (T), activo (E: SI, NO), excluidos_legajos (ML), creado_por (T), timestamp (T).
+hora_fin (T `HH:MM`), descripcion (T), activo (E: SI, NO), excluidos_legajos (ML), creado_por (ML,
+lleva el historial de ediciones), timestamp (T), dias_semana (T, ej `LU,MA`), solo_legajos (ML).
 
 **`config_app`**: Title (= clave), valor (ML), actualizado_por (T), timestamp (T).
 Con Entra ID ya no guarda contraseñas; queda para parámetros futuros. Permisos: solo la app y el dueño.

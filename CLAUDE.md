@@ -64,12 +64,18 @@ y los tests de `tests/test_permisos_service.py` en el mismo cambio.
 ### 2. Sin Retorno (S/R)
 - **Solo San Juan** (`key_planta == "Fábrica"`): S/R bloquea la hora de entrada y calcula
   contra el fin de turno vigente (`obtener_hora_fin_turno`), con `hora_entrada = "S/R"`.
-- Fin de turno general: `HORA_FIN_TURNO = 15:00`. Las excepciones temporales vienen de la hoja
-  `config_horarios` (planta `Fábrica` / `Casa Central` / `Todas`, rango `desde`–`hasta` inclusive,
-  `activo == "SI"`, con `excluidos_legajos` que siguen en horario normal). Se evalúan con la
-  **fecha del permiso**, no con la de hoy. Filas mal cargadas se ignoran, no rompen la app.
+- Fin de turno normal (`hora_fin_normal`): San Juan `HORA_FIN_TURNO = 15:00`, Bs. As.
+  `HORA_FIN_TURNO_BSAS = 17:00`. Las excepciones temporales vienen de la hoja `config_horarios`
+  (planta `Fábrica` / `Casa Central` / `Todas`, rango `desde`–`hasta` inclusive, `activo == "SI"`)
+  con columnas opcionales: `dias_semana` (`LU,MA`…; vacío = todos), `solo_legajos` (rige solo
+  para esas personas) y `excluidos_legajos` (siguen en horario normal). Precedencia: fila
+  `solo_legajos` que incluye a la persona → primera fila general donde no esté excluida →
+  horario normal. Se evalúan con la **fecha del permiso**, no con la de hoy. Filas mal cargadas
+  (hora o días inválidos) se ignoran, no rompen la app. Todo se edita desde el Panel RRHH
+  (`editar_excepcion_horario`, deja auditoría en `creado_por`): no hardcodear personas ni días.
 - Activar una excepción **no recalcula** permisos ya cargados.
-- **Bs. As.**: S/R es solo una etiqueta; el guardia carga la hora real. No forzar horario.
+- **Bs. As.**: S/R no fuerza horario: se **propone** el fin de jornada vigente para esa persona
+  (editable) y se guarda la hora real que cargó el guardia. No bloquear ese campo.
 - Los horarios especiales **no** afectan los topes anuales.
 
 ### 3. Política de motivos por planta — `puede_compensar_por_politica()`
@@ -110,7 +116,7 @@ y los tests de `tests/test_permisos_service.py` en el mismo cambio.
 - % cumplimiento = min(100, compensadas / comprometidas × 100) (acumulado y mensual).
 - MOD = `clasificacion == "HOURLY DIRECT"` y sector que contiene `"COSTURA"`.
   Horas del día = Σ minutos_reales / 60 − 0.5h de almuerzo (una vez por día, piso 0).
-  **Días con horario especial vigente → 0h de almuerzo** (la jornada 6 a 11 no tiene almuerzo;
+  **Días con horario especial general vigente → 0h de almuerzo** (la jornada 6 a 11 no tiene almuerzo;
   `almuerzo_del_dia()` en `analytics_service.py`). Decisión de RRHH del 2026-10-12.
 
 ### 9. Contratos con el Google Sheet (romperlos corrompe datos)
@@ -127,7 +133,8 @@ y los tests de `tests/test_permisos_service.py` en el mismo cambio.
   - `padron`: `legajo, nombre, sector, centro_costo, planta, activo, clasificacion`
     (`es_lider` es opcional; si no está, se usa `LIDERES_SJ`).
   - `config_horarios`: `id, planta, desde, hasta, hora_fin, descripcion, activo,
-    excluidos_legajos, creado_por, timestamp`.
+    excluidos_legajos, creado_por, timestamp, dias_semana, solo_legajos` (las tres opcionales
+    pueden faltar si están vacías; se agregan al final de la hoja).
   - `config_app`: `clave, valor, actualizado_por, timestamp`.
 - Valores canónicos: `planta` ∈ {`Fábrica`, `Casa Central`}; `compensa` ∈ {`SI`, `NO`, `ANULADO`};
   `activo`/`es_lider` ∈ {`SI`, `NO`}; fechas `YYYY-MM-DD`; horas `HH:MM`;

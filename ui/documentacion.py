@@ -10,7 +10,7 @@ from config import (
     MOTIVOS_COMPENSAN_SJ, MOTIVOS_COMPENSAN_LIDERES_SJ,
     MOTIVOS_COMPENSAN_BSAS, MOTIVOS_LISTA, MOTIVOS_FUERA_TOPE,
     LIDERES_SJ, TOPE_HORAS_NORMAL, TOPE_HORAS_LIDER, TOPE_EXTRA_FUERA_TOPE,
-    ALMUERZO_H, HORA_FIN_TURNO, TOPE_HORAS_BSAS, TOPE_HORAS_POR_PERMISO_BSAS,
+    ALMUERZO_H, HORA_FIN_TURNO, HORA_FIN_TURNO_BSAS, TOPE_HORAS_BSAS, TOPE_HORAS_POR_PERMISO_BSAS,
 )
 
 
@@ -63,11 +63,19 @@ Toda ausencia parcial se convierte a horas enteras con esta regla:
             "Para auditar, revisá la columna 'Minutos reales' en el Detalle de permisos del Panel RRHH."
         )
         _hf = HORA_FIN_TURNO.strftime("%H:%M")
+        _hf_ba = HORA_FIN_TURNO_BSAS.strftime("%H:%M")
         st.markdown(
             f"**Sin Retorno (S/R) — solo San Juan:** se calcula contra el fin de turno "
             f"vigente ese día. Por defecto **{_hf} hs**; si RRHH cargó un **horario especial** "
             "(Panel RRHH → Horarios especiales, ej: reducción horaria) para esa fecha, se usa "
             "ese horario, salvo para las personas excluidas de ese horario especial."
+        )
+        st.markdown(
+            "**Horarios especiales** (Panel RRHH): cada uno tiene planta, fechas y hora de fin, y "
+            "opcionalmente **días de la semana** (ej: solo lunes y martes) y **a quién aplica** "
+            "(toda la planta, o solo algunas personas). Si una persona tiene un horario cargado "
+            "**para ella**, ese le gana al horario general de la planta; los **excluidos** de un "
+            "horario general siguen con el horario normal."
         )
         st.code(
             "Minutos ausente = (fin_de_turno_vigente − hora_salida) × 60\n"
@@ -76,8 +84,10 @@ Toda ausencia parcial se convierte a horas enteras con esta regla:
             language="text",
         )
         st.info(
-            "**Bs. As.:** 'Sin retorno' es solo una etiqueta — no fuerza ningún horario. "
-            "El guardia carga la hora real en que la persona terminó su jornada."
+            f"**Bs. As.:** 'Sin retorno' no fuerza ningún horario. La app **propone** como hora de "
+            f"fin de jornada la vigente para esa persona ese día (normal **{_hf_ba} hs**, o el "
+            "horario especial que le corresponda) y el guardia la cambia si terminó a otra hora. "
+            "Se guarda la hora real que quedó cargada."
         )
         st.caption(
             "Un horario especial NO recalcula permisos ya cargados: si se activa tarde, "

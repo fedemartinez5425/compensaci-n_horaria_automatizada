@@ -19,7 +19,9 @@ horas = ENTERO(minutos / 60)
 si (minutos % 60) >= 30 → horas + 1
 ```
 
-**Caso Sin Retorno (S/R) — solo San Juan:** cuando la persona no vuelve, el tiempo se calcula contra el fin de turno vigente ese día: 15:00 hs por defecto, o el horario especial cargado por RRHH (Panel RRHH → Horarios especiales) para esa fecha, salvo para las personas excluidas de ese horario. En Bs. As. "Sin retorno" no fuerza horario: se carga la hora real.
+**Caso Sin Retorno (S/R) — solo San Juan:** cuando la persona no vuelve, el tiempo se calcula contra el fin de turno vigente ese día: 15:00 hs por defecto, o el horario especial cargado por RRHH (Panel RRHH → Horarios especiales) para esa fecha, salvo para las personas excluidas de ese horario. En Bs. As. "Sin retorno" no fuerza horario: la app propone el fin de jornada vigente para esa persona ese día (17:00 hs normal, o el horario especial que le toque) y el guardia lo cambia si terminó a otra hora; se guarda la hora real.
+
+**Horarios especiales (Panel RRHH → hoja `config_horarios`):** cada fila tiene planta, fechas `desde`–`hasta` y `hora_fin`, y opcionalmente `dias_semana` (ej: `LU,MA`; vacío = todos los días), `solo_legajos` (rige solo para esas personas) y `excluidos_legajos` (personas a las que una fila general no se les aplica). Para una persona y un día: primero se busca una fila con `solo_legajos` que la incluya; si no hay, la primera fila general donde no esté excluida; si tampoco, el horario normal de la planta (San Juan 15:00, Bs. As. 17:00). Ej. Bs. As. desde 01/10/2026: general 7 a 13 (fin 13:00) + jornada completa 7 a 16 (fin 16:00) solo para 5 personas + 7 a 16 solo lunes y martes para los rotativos.
 
 ```
 minutos_ausente = (fin_de_turno_vigente − hora_salida) × 60

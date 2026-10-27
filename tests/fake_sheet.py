@@ -80,6 +80,8 @@ HEADERS_HORARIOS_VIEJA = ["id", "planta", "desde", "hasta", "hora_fin", "descrip
                           "activo", "creado_por", "timestamp"]
 HEADERS_HORARIOS = ["id", "planta", "desde", "hasta", "hora_fin", "descripcion",
                     "activo", "excluidos_legajos", "creado_por", "timestamp"]
+# Con las columnas opcionales nuevas agregadas AL FINAL (así se recomienda sumarlas).
+HEADERS_HORARIOS_COMPLETA = HEADERS_HORARIOS + ["dias_semana", "solo_legajos"]
 HEADERS_CONFIG_APP = ["clave", "valor", "actualizado_por", "timestamp"]
 
 

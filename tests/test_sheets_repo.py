@@ -136,3 +136,58 @@ def test_config_app_crea_y_actualiza(wb):
     repo.actualizar_config_app(None, "password_rrhh", "h2", "Fede")
     filas = wb.worksheet("config_app").as_dicts()
     assert len(filas) == 1 and filas[0]["valor"] == "h2"
+
+
+# ── Horarios por días / por persona y edición desde el panel ─
+from tests.fake_sheet import HEADERS_HORARIOS_COMPLETA  # noqa: E402
+
+
+def test_horario_con_dias_en_hoja_sin_columna_da_error_claro(wb):
+    wb.hojas["config_horarios"] = FakeWorksheet(HEADERS_HORARIOS)
+    with pytest.raises(ValueError, match="dias_semana"):
+        repo.guardar_excepcion_horario(None, {**_excepcion(), "dias_semana": "LU,MA"})
+    assert wb.worksheet("config_horarios").as_dicts() == []
+
+
+def test_horario_completo_se_lee_con_columnas_nuevas(wb):
+    wb.hojas["config_horarios"] = FakeWorksheet(HEADERS_HORARIOS_COMPLETA)
+    repo.guardar_excepcion_horario(None, {**_excepcion(), "dias_semana": "LU,MA", "solo_legajos": "3001"})
+    df = repo.leer_config_horarios(None)
+    assert df.iloc[0]["dias_semana"] == "LU,MA" and df.iloc[0]["solo_legajos"] == "3001"
+    assert df.iloc[0]["creado_por"] == "RRHH"
+
+
+def test_hoja_vieja_lee_columnas_nuevas_vacias(wb):
+    repo.guardar_excepcion_horario(None, _excepcion())  # hoja sin columnas opcionales
+    df = repo.leer_config_horarios(None)
+    assert df.iloc[0]["dias_semana"] == "" and df.iloc[0]["solo_legajos"] == ""
+    assert df.iloc[0]["excluidos_legajos"] == ""
+
+
+def test_editar_horario_por_nombre_de_columna_y_audita(wb):
+    wb.hojas["config_horarios"] = FakeWorksheet(HEADERS_HORARIOS_COMPLETA)
+    repo.guardar_excepcion_horario(None, _excepcion())
+    assert repo.editar_excepcion_horario(None, "H1", {
+        "hasta": "2027-01-31", "hora_fin": "13:00", "dias_semana": "LU,MA", "solo_legajos": "3001",
+    }, "Ailen")
+    f = wb.worksheet("config_horarios").as_dicts()[0]
+    assert f["hasta"] == "2027-01-31" and f["hora_fin"] == "13:00"
+    assert f["dias_semana"] == "LU,MA" and f["solo_legajos"] == "3001"
+    assert f["planta"] == "Fábrica" and f["activo"] == "SI"
+    assert f["creado_por"].startswith("RRHH | editado por Ailen")
+
+
+def test_editar_horario_columna_faltante_no_escribe_nada(wb):
+    wb.hojas["config_horarios"] = FakeWorksheet(HEADERS_HORARIOS)
+    repo.guardar_excepcion_horario(None, _excepcion())
+    with pytest.raises(ValueError, match="solo_legajos"):
+        repo.editar_excepcion_horario(None, "H1", {"hora_fin": "13:00", "solo_legajos": "3001"}, "Ailen")
+    assert wb.worksheet("config_horarios").as_dicts()[0]["hora_fin"] == "11:00"
+    # Vacío en una columna que no existe: se ignora, el resto se guarda
+    assert repo.editar_excepcion_horario(None, "H1", {"hora_fin": "13:00", "solo_legajos": ""}, "Ailen")
+    assert wb.worksheet("config_horarios").as_dicts()[0]["hora_fin"] == "13:00"
+
+
+def test_editar_horario_campo_no_editable(wb):
+    with pytest.raises(ValueError, match="planta"):
+        repo.editar_excepcion_horario(None, "H1", {"planta": "Todas"}, "Ailen")

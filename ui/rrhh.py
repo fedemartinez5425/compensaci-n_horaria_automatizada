@@ -11,18 +11,18 @@ import plotly.graph_objects as go
 from datetime import date, datetime
 import calendar as _cal
 
-from config import AÑOS, MESES, CLASIF_COLOR
+from config import AÑOS, MESES, CLASIF_COLOR, DIAS_SEMANA
 from services.permisos_service import (
     calcular_saldos, fmt_horas, generar_id,
     obtener_tope, horas_comprometidas_año,
-    validar_compensacion, excepcion_horario_activa,
+    validar_compensacion, excepcion_horario_activa, hora_fin_normal,
 )
 from repositories.sheets_repo import (
     guardar_compensacion, corregir_permiso,
     marcar_activo, eliminar_empleado_padron,
     verificar_compensacion_duplicada,
     guardar_excepcion_horario, desactivar_excepcion_horario,
-    editar_excluidos_horario,
+    editar_excepcion_horario,
     actualizar_config_app,
 )
 from services.auth_service import hashear_password
@@ -595,37 +595,57 @@ def render(
     else:
         st.info("No hay permisos en este período.")
 
-    # ── Horarios especiales (Sin Retorno) ──────────────────────
+    # ── Horarios especiales ────────────────────────────────────
     st.divider()
-    st.subheader("⚙️ Horarios especiales (Sin Retorno)")
+    st.subheader("⚙️ Horarios especiales")
     _caption(
-        "Configurá acá cambios temporales del horario de fin de turno "
-        "(ej: reducción horaria, verano, etc.), sin tocar código. "
-        "Afecta SOLO el cálculo de permisos 'Sin retorno' — el tope anual "
-        "de horas a compensar de cada persona no cambia por esto."
+        "Configurá acá cambios temporales del fin de turno (reducción horaria, jornada "
+        "completa de algunas personas ciertos días, etc.), sin tocar código. Horario normal: "
+        f"San Juan **{hora_fin_normal('Fábrica'):%H:%M}hs**, Bs. As. **{hora_fin_normal('Casa Central'):%H:%M}hs**. "
+        "En San Juan define el cálculo de los 'Sin retorno'; en Bs. As. solo propone la hora "
+        "de fin de jornada al guardia. El tope anual de horas no cambia por esto."
     )
+    _caption(
+        "Cómo se combinan: un horario **solo para algunas personas** le gana al horario general "
+        "de la planta. Los **excluidos** de un horario general siguen con el horario normal "
+        "(o con otro horario cargado para ellos). Los **días** limitan el horario a esos días "
+        "de la semana (vacío = todos)."
+    )
+
+    _legajo_a_nombre = {v: k for k, v in nombre_a_legajo.items()}
+    _dias_cod = list(DIAS_SEMANA)
+
+    def _a_legajos(nombres):
+        return ",".join(nombre_a_legajo[n] for n in nombres if n in nombre_a_legajo)
+
+    def _lista(legajos_txt):
+        return [l.strip() for l in str(legajos_txt).split(",") if l.strip()]
+
+    def _a_nombres(legajos_txt):
+        return [_legajo_a_nombre.get(l, l) for l in _lista(legajos_txt)]
+
+    def _dias_de(texto):
+        elegidos = [d.strip().upper()[:2] for d in str(texto).split(",")]
+        return [c for c in _dias_cod if c in elegidos]
 
     _exc_hoy = excepcion_horario_activa(config_horarios, key_planta, date.today())
     if _exc_hoy:
         st.success(
-            f"🕐 **Vigente ahora** para {planta_activa}: fin de turno "
+            f"🕐 **Vigente hoy** para {planta_activa}: fin de turno "
             f"**{_exc_hoy['hora_fin'].strftime('%H:%M')}hs** — {_exc_hoy['descripcion']} "
             f"(hasta {_exc_hoy['hasta'].strftime('%d/%m/%Y')})"
         )
     else:
-        st.caption("No hay ningún horario especial vigente ahora mismo para esta vista — rige el horario general (15:00hs).")
+        st.caption("Hoy no hay un horario especial general vigente para esta vista — rige el horario normal.")
+
+    _plt_opts = ["Fábrica", "Casa Central", "Todas"]
+    _plt_labels = {"Fábrica": "San Juan", "Casa Central": "Bs. As.", "Todas": "Ambas plantas"}
 
     with st.expander("➕ Agregar un horario especial nuevo"):
         with st.form("form_horario_especial", clear_on_submit=True):
-            _plt_opts = ["Fábrica", "Casa Central", "Todas"]
-            _plt_labels = {"Fábrica": "San Juan", "Casa Central": "Bs. As.", "Todas": "Ambas plantas"}
-            _plt_h = st.selectbox("Planta a la que aplica", _plt_opts, format_func=lambda p: _plt_labels[p])
-
-            _nombres_excl_pre = st.multiselect(
-                "Personas que quedan EXCLUIDAS de este horario especial "
-                "(siguen con el horario normal — ej: EXEMPT, mantenimiento)",
-                nombres_lista, key="excl_nuevo_horario",
-            )
+            _plt_def = _plt_opts.index(key_planta) if key_planta in _plt_opts else 0
+            _plt_h = st.selectbox("Planta a la que aplica", _plt_opts, index=_plt_def,
+                                  format_func=lambda p: _plt_labels[p])
 
             _ch1, _ch2, _ch3 = st.columns(3)
             with _ch1:
@@ -633,20 +653,33 @@ def render(
             with _ch2:
                 _hasta_h = st.date_input("Vigente hasta", value=date.today(), format="DD/MM/YYYY")
             with _ch3:
-                from datetime import time as _time
-                _hora_h = st.time_input("Nueva hora de fin de turno", value=_time(15, 0), step=60)
+                _hora_h = st.time_input("Hora de fin de turno", value=hora_fin_normal(key_planta), step=60)
 
-            _desc_h  = st.text_input("Descripción", placeholder="Ej: Reducción horaria — corte de energía")
-            _quien_h = st.text_input("Tu nombre *")
+            _dias_h = st.multiselect(
+                "Días de la semana (vacío = todos los días)", _dias_cod,
+                format_func=lambda c: DIAS_SEMANA[c], key="dias_nuevo_horario",
+            )
+            _solo_h = st.multiselect(
+                "Solo para estas personas (vacío = toda la planta). Ej: jornada completa de algunos",
+                nombres_lista, key="solo_nuevo_horario",
+            )
+            _nombres_excl_pre = st.multiselect(
+                "Personas EXCLUIDAS (siguen con el horario normal; solo para horarios de toda la planta)",
+                nombres_lista, key="excl_nuevo_horario",
+            )
+
+            _desc_h  = st.text_input("Descripción", placeholder="Ej: Reducción horaria — 7 a 13")
+            _quien_h = st.text_input("Tu nombre *", key="quien_nuevo_horario")
 
             if st.form_submit_button("💾 Guardar horario especial", type="primary", use_container_width=True):
                 if _hasta_h < _desde_h:
                     st.error("❌ La fecha 'hasta' no puede ser anterior a 'desde'.")
                 elif not _quien_h.strip():
                     st.error("❌ Falta tu nombre.")
+                elif _solo_h and _nombres_excl_pre:
+                    st.error("❌ Un horario 'solo para estas personas' no lleva excluidos: dejá una de las dos listas vacía.")
                 else:
                     try:
-                        _legajos_excl = [nombre_a_legajo[n] for n in _nombres_excl_pre if n in nombre_a_legajo]
                         guardar_excepcion_horario(gc, {
                             "id":                generar_id("H"),
                             "planta":            _plt_h,
@@ -655,7 +688,9 @@ def render(
                             "hora_fin":          _hora_h.strftime("%H:%M"),
                             "descripcion":       _desc_h.strip() or "Horario especial",
                             "activo":            "SI",
-                            "excluidos_legajos": ",".join(_legajos_excl),
+                            "excluidos_legajos": _a_legajos(_nombres_excl_pre),
+                            "dias_semana":       ",".join(_dias_h),
+                            "solo_legajos":      _a_legajos(_solo_h),
                             "creado_por":        _quien_h.strip(),
                             "timestamp":         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         })
@@ -670,64 +705,112 @@ def render(
     if not config_horarios.empty:
         st.markdown("**Horarios especiales cargados:**")
         _tabla_h = config_horarios.copy()
-        _tabla_h["planta"] = _tabla_h["planta"].map({
-            "Fábrica": "San Juan", "Casa Central": "Bs. As.", "Todas": "Ambas plantas",
-        }).fillna(_tabla_h["planta"])
+        _tabla_h["planta"] = _tabla_h["planta"].map(_plt_labels).fillna(_tabla_h["planta"])
         _tabla_h["desde"] = _tabla_h["desde"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—")
         _tabla_h["hasta"] = _tabla_h["hasta"].apply(lambda d: d.strftime("%d/%m/%Y") if pd.notna(d) else "—")
-        _legajo_a_nombre = {v: k for k, v in nombre_a_legajo.items()}
-        _tabla_h["excluidos_nombres"] = _tabla_h.get("excluidos_legajos", "").apply(
-            lambda s: ", ".join(_legajo_a_nombre.get(l, l) for l in str(s).split(",") if l.strip()) or "—"
-        )
-        _mostrar_h = _tabla_h[["descripcion", "planta", "desde", "hasta", "hora_fin", "activo", "excluidos_nombres"]].copy()
-        _mostrar_h.columns = ["Descripción", "Planta", "Desde", "Hasta", "Nueva hora fin", "Activo", "Excluidos"]
+        _tabla_h["dias"] = _tabla_h["dias_semana"].apply(
+            lambda t: ", ".join(DIAS_SEMANA[c] for c in _dias_de(t)) or "Todos")
+        _tabla_h["solo"] = _tabla_h["solo_legajos"].apply(lambda t: ", ".join(_a_nombres(t)) or "Toda la planta")
+        _tabla_h["excl"] = _tabla_h["excluidos_legajos"].apply(lambda t: ", ".join(_a_nombres(t)) or "—")
+        _mostrar_h = _tabla_h[["descripcion", "planta", "desde", "hasta", "hora_fin",
+                               "dias", "solo", "excl", "activo"]].copy()
+        _mostrar_h.columns = ["Descripción", "Planta", "Desde", "Hasta", "Hora fin", "Días",
+                              "Aplica a", "Excluidos", "Activo"]
         st.dataframe(_mostrar_h, use_container_width=True, hide_index=True)
 
         _activas_h = config_horarios[config_horarios["activo"] == "SI"]
         if not _activas_h.empty:
-            _desact_opts = ["— Seleccioná —"] + _activas_h["descripcion"].tolist()
-            _sel_desact = st.selectbox(
-                "Desactivar un horario especial (ej: si terminó antes de lo previsto)",
-                _desact_opts, key="desact_horario_especial",
-            )
+            # La etiqueta lleva el final del id: dos horarios pueden tener la misma descripción.
+            _opciones_h = {
+                f"{f['descripcion']} — {_plt_labels.get(f['planta'], f['planta'])} — "
+                f"{f['hora_fin']}hs ({str(f['id'])[-6:]})": f
+                for _, f in _activas_h.iterrows()
+            }
+
+            st.markdown("**✏️ Editar un horario especial** (fechas, hora, días, a quién aplica, excluidos)")
+            _sel_edit = st.selectbox("Horario especial a editar", ["— Seleccioná —"] + list(_opciones_h),
+                                     key="sel_editar_horario")
+            if _sel_edit != "— Seleccioná —":
+                _f = _opciones_h[_sel_edit]
+                _id_f = str(_f["id"])
+                # Personas de otra planta (no aparecen en esta vista): se conservan tal cual.
+                _solo_fuera = [l for l in _lista(_f["solo_legajos"]) if _legajo_a_nombre.get(l) not in nombres_lista]
+                _excl_fuera = [l for l in _lista(_f["excluidos_legajos"]) if _legajo_a_nombre.get(l) not in nombres_lista]
+                with st.form(f"form_editar_horario_{_id_f}"):
+                    _e1, _e2, _e3 = st.columns(3)
+                    with _e1:
+                        _e_desde = st.date_input(
+                            "Vigente desde", format="DD/MM/YYYY",
+                            value=_f["desde"] if pd.notna(_f["desde"]) else date.today())
+                    with _e2:
+                        _e_hasta = st.date_input(
+                            "Vigente hasta", format="DD/MM/YYYY",
+                            value=_f["hasta"] if pd.notna(_f["hasta"]) else date.today())
+                    with _e3:
+                        try:
+                            _hora_actual = datetime.strptime(str(_f["hora_fin"]), "%H:%M").time()
+                        except ValueError:
+                            _hora_actual = hora_fin_normal(_f["planta"])
+                        _e_hora = st.time_input("Hora de fin de turno", value=_hora_actual, step=60)
+                    _e_dias = st.multiselect("Días de la semana (vacío = todos)", _dias_cod,
+                                             default=_dias_de(_f["dias_semana"]),
+                                             format_func=lambda c: DIAS_SEMANA[c])
+                    _e_solo = st.multiselect(
+                        "Solo para estas personas (vacío = toda la planta)", nombres_lista,
+                        default=[n for n in _a_nombres(_f["solo_legajos"]) if n in nombres_lista])
+                    _e_excl = st.multiselect(
+                        "Personas excluidas (siguen con el horario normal)", nombres_lista,
+                        default=[n for n in _a_nombres(_f["excluidos_legajos"]) if n in nombres_lista])
+                    if _solo_fuera or _excl_fuera:
+                        st.caption(
+                            "ℹ️ Este horario también incluye personas que no están en esta vista "
+                            f"(legajos {', '.join(_solo_fuera + _excl_fuera)}): se mantienen."
+                        )
+                    _e_desc  = st.text_input("Descripción", value=str(_f["descripcion"]))
+                    _e_quien = st.text_input("Tu nombre *", key=f"quien_editar_horario_{_id_f}")
+
+                    if st.form_submit_button("💾 Guardar cambios", type="primary"):
+                        if _e_hasta < _e_desde:
+                            st.error("❌ La fecha 'hasta' no puede ser anterior a 'desde'.")
+                        elif not _e_quien.strip():
+                            st.error("❌ Falta tu nombre.")
+                        elif (_e_solo or _solo_fuera) and (_e_excl or _excl_fuera):
+                            st.error("❌ Un horario 'solo para estas personas' no lleva excluidos: dejá una de las dos listas vacía.")
+                        else:
+                            try:
+                                ok = editar_excepcion_horario(gc, _f["id"], {
+                                    "desde":             _e_desde.strftime("%Y-%m-%d"),
+                                    "hasta":             _e_hasta.strftime("%Y-%m-%d"),
+                                    "hora_fin":          _e_hora.strftime("%H:%M"),
+                                    "descripcion":       _e_desc.strip() or "Horario especial",
+                                    "dias_semana":       ",".join(_e_dias),
+                                    "solo_legajos":      ",".join([nombre_a_legajo[n] for n in _e_solo] + _solo_fuera),
+                                    "excluidos_legajos": ",".join([nombre_a_legajo[n] for n in _e_excl] + _excl_fuera),
+                                }, _e_quien)
+                                if ok:
+                                    st.success("✅ Horario actualizado.")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ No se encontró el registro. Recargá la página e intentá de nuevo.")
+                            except ValueError as e:
+                                st.error(f"❌ {e}")
+
+            st.markdown("**🚫 Desactivar un horario especial** (ej: si terminó antes de lo previsto)")
+            _sel_desact = st.selectbox("Horario a desactivar", ["— Seleccioná —"] + list(_opciones_h),
+                                       key="desact_horario_especial")
             if _sel_desact != "— Seleccioná —":
                 if st.button("🚫 Desactivar horario seleccionado", key="btn_desact_horario"):
-                    _id_sel = _activas_h[_activas_h["descripcion"] == _sel_desact]["id"].values[0]
-                    if desactivar_excepcion_horario(gc, _id_sel):
+                    if desactivar_excepcion_horario(gc, _opciones_h[_sel_desact]["id"]):
                         st.success("✅ Desactivado.")
                         st.rerun()
                     else:
                         st.error("❌ No se encontró el registro. Recargá la página e intentá de nuevo.")
-
-            st.markdown("**✏️ Editar quién está excluido** (sumar o sacar gente sin recrear el horario)")
-            _sel_edit_excl = st.selectbox(
-                "Horario especial a editar",
-                ["— Seleccioná —"] + _activas_h["descripcion"].tolist(),
-                key="sel_editar_excluidos",
-            )
-            if _sel_edit_excl != "— Seleccioná —":
-                _fila_sel = _activas_h[_activas_h["descripcion"] == _sel_edit_excl].iloc[0]
-                _excl_actuales_legajos = [l.strip() for l in str(_fila_sel.get("excluidos_legajos", "")).split(",") if l.strip()]
-                _excl_actuales_nombres = [_legajo_a_nombre.get(l, l) for l in _excl_actuales_legajos]
-                _nuevos_excl_nombres = st.multiselect(
-                    "Personas excluidas (siguen con horario normal)",
-                    nombres_lista, default=_excl_actuales_nombres, key="edit_excl_multiselect",
-                )
-                if st.button("💾 Guardar lista de excluidos", key="btn_guardar_excluidos"):
-                    _nuevos_legajos = [nombre_a_legajo[n] for n in _nuevos_excl_nombres if n in nombre_a_legajo]
-                    if editar_excluidos_horario(gc, _fila_sel["id"], _nuevos_legajos):
-                        st.success("✅ Lista de excluidos actualizada.")
-                        st.rerun()
-                    else:
-                        st.error(
-                            "❌ No se pudo actualizar. Si el Google Sheet no tiene la columna "
-                            "'excluidos_legajos' en la hoja 'config_horarios', agregala una vez."
-                        )
     else:
         st.caption(
             "No hay horarios especiales cargados todavía. Si el Google Sheet no tiene "
             "la hoja 'config_horarios', creála una vez con las columnas: id, planta, "
-            "desde, hasta, hora_fin, descripcion, activo, excluidos_legajos, creado_por, timestamp."
+            "desde, hasta, hora_fin, descripcion, activo, excluidos_legajos, creado_por, "
+            "timestamp, dias_semana, solo_legajos."
         )
 
     # ── Contraseñas de acceso ───────────────────────────────────

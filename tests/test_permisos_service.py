@@ -7,12 +7,13 @@ from datetime import date, time
 import pandas as pd
 import pytest
 
-from config import HORA_FIN_TURNO
+from config import HORA_FIN_TURNO, HORA_FIN_TURNO_BSAS
 from services.permisos_service import (
     redondear_horas, minutos_entre, obtener_tope, excede_tope_por_permiso,
     horas_comprometidas_año, horas_fuera_tope_año, puede_compensar_por_politica,
     calcular_saldos, kpi_compensacion_acumulado, indicador_mensual,
     validar_permiso, obtener_hora_fin_turno, excepcion_horario_activa, generar_id,
+    parse_dias_semana, hora_fin_normal,
 )
 
 
@@ -151,7 +152,7 @@ def test_horario_especial_aplica_en_rango_y_planta():
     h = _horarios()
     assert obtener_hora_fin_turno(h, "Fábrica", date(2026, 9, 17)) == time(11)
     assert obtener_hora_fin_turno(h, "Fábrica", date(2026, 8, 31)) == HORA_FIN_TURNO
-    assert obtener_hora_fin_turno(h, "Casa Central", date(2026, 9, 17)) == HORA_FIN_TURNO
+    assert obtener_hora_fin_turno(h, "Casa Central", date(2026, 9, 17)) == HORA_FIN_TURNO_BSAS
 
 
 def test_horario_especial_respeta_excluidos():
@@ -180,3 +181,68 @@ def test_ids_no_se_repiten_en_el_mismo_segundo():
     ids = {generar_id("P") for _ in range(500)}
     assert len(ids) == 500
     assert all(i.startswith("P") for i in ids)
+
+
+# ── Horarios por días y por persona (caso Bs. As. octubre 2026) ──
+def test_horario_normal_por_planta():
+    assert hora_fin_normal("Fábrica") == time(15)
+    assert hora_fin_normal("Casa Central") == time(17)
+    assert obtener_hora_fin_turno(None, "Casa Central", date(2026, 10, 27)) == time(17)
+
+
+def test_parse_dias_semana():
+    assert parse_dias_semana("") is None
+    assert parse_dias_semana("LU,MA") == {0, 1}
+    assert parse_dias_semana("lunes, Miércoles, sábado") == {0, 2, 5}
+    assert parse_dias_semana("cualquiera") == set()
+
+
+def _fila_h(id_, hora_fin, dias="", solo="", excluidos="", planta="Casa Central"):
+    return {"id": id_, "planta": planta, "desde": date(2026, 10, 1), "hasta": date(2026, 12, 31),
+            "hora_fin": hora_fin, "descripcion": id_, "activo": "SI",
+            "excluidos_legajos": excluidos, "dias_semana": dias, "solo_legajos": solo}
+
+
+def _horarios_bsas():
+    # 7 a 13 para todos · 5 fijos con jornada completa 7 a 16 · rotativos 7 a 16 lunes y martes
+    return pd.DataFrame([
+        _fila_h("general", "13:00"),
+        _fila_h("fijos", "16:00", solo="2455,2458,9010,9016,2411"),
+        _fila_h("rotativos", "16:00", dias="LU,MA", solo="2459,9260,9236,9261"),
+    ])
+
+
+LUNES, MIERCOLES = date(2026, 10, 26), date(2026, 10, 28)
+
+
+def test_bsas_general_fijos_y_rotativos():
+    h = _horarios_bsas()
+    assert obtener_hora_fin_turno(h, "Casa Central", LUNES, legajo="9999") == time(13)
+    assert obtener_hora_fin_turno(h, "Casa Central", LUNES, legajo="2411") == time(16)
+    assert obtener_hora_fin_turno(h, "Casa Central", MIERCOLES, legajo="2411") == time(16)
+    assert obtener_hora_fin_turno(h, "Casa Central", LUNES, legajo="9260") == time(16)
+    assert obtener_hora_fin_turno(h, "Casa Central", MIERCOLES, legajo="9260") == time(13)
+    # Antes del 1/10 rige el horario normal de Bs. As.
+    assert obtener_hora_fin_turno(h, "Casa Central", date(2026, 9, 30), legajo="9260") == time(17)
+
+
+def test_horario_solo_legajos_no_aplica_sin_legajo_ni_en_otra_planta():
+    h = _horarios_bsas()
+    assert excepcion_horario_activa(h, "Casa Central", LUNES)["id"] == "general"
+    assert obtener_hora_fin_turno(h, "Fábrica", LUNES, legajo="2411") == HORA_FIN_TURNO
+
+
+def test_excluido_de_la_general_va_al_horario_normal():
+    h = pd.DataFrame([_fila_h("general", "13:00", excluidos="2455")])
+    assert obtener_hora_fin_turno(h, "Casa Central", LUNES, legajo="2455") == time(17)
+
+
+def test_dias_invalidos_ignoran_la_fila():
+    h = pd.DataFrame([_fila_h("mal", "13:00", dias="xx")])
+    assert excepcion_horario_activa(h, "Casa Central", LUNES) is None
+
+
+def test_san_juan_sin_columnas_nuevas_sigue_igual():
+    h = _horarios()  # hoja sin dias_semana ni solo_legajos
+    assert obtener_hora_fin_turno(h, "Fábrica", LUNES) == time(11)
+    assert obtener_hora_fin_turno(h, "Fábrica", date(2026, 10, 25)) == time(11)  # domingo: sin días = todos

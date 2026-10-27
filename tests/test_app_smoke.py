@@ -12,7 +12,7 @@ from streamlit.testing.v1 import AppTest
 
 from repositories import sheets_repo as repo
 from services.auth_service import hashear_password
-from tests.fake_sheet import workbook_base, FakeWorksheet, HEADERS_HORARIOS
+from tests.fake_sheet import workbook_base, FakeWorksheet, HEADERS_HORARIOS, HEADERS_HORARIOS_COMPLETA
 
 PW_GUARDIA, PW_RRHH = "guardia-test", "rrhh-test"
 APP_PY = Path(__file__).resolve().parent.parent / "app.py"
@@ -115,6 +115,59 @@ def test_guardia_sin_retorno_con_horario_reducido(wb):
     assert nuevo["minutos_reales"] == 60.0     # 10:00 → 11:00, no hasta las 15:00
     assert nuevo["horas_redondeadas"] == 1.0
     assert nuevo["planta"] == "Fábrica"
+
+
+def _horarios_bsas(wb):
+    # general 7 a 13 + jornada completa (16:00) solo para DIAZ, EVA (3001)
+    wb.hojas["config_horarios"] = FakeWorksheet(HEADERS_HORARIOS_COMPLETA, [
+        ["H1", "Casa Central", "2020-01-01", "2099-12-31", "13:00", "Reducción 7 a 13",
+         "SI", "", "RRHH", "", "", ""],
+        ["H2", "Casa Central", "2020-01-01", "2099-12-31", "16:00", "Jornada completa",
+         "SI", "", "RRHH", "", "", "3001"],
+    ])
+
+
+def test_guardia_bsas_sin_retorno_sugiere_fin_de_jornada_de_la_persona(wb):
+    _horarios_bsas(wb)
+    at = _login(_app(wb))
+    at = _ir(at, "Casa Central Bs. As.", "🔵 Panel Guardia")
+    at.selectbox[0].select("DIAZ, EVA")
+    at.selectbox(key="motivo_pre").select("Banco / Cajero")
+    at.time_input(key="hora_sal_pre").set_value(time(13, 0))
+    at.checkbox(key="sr_pre").check()
+    at = at.run()
+    entrada = next(t for t in at.time_input if t.label.startswith("🏁"))
+    assert "sugerida 16:00" in entrada.label and not entrada.disabled
+    assert entrada.value == time(16, 0)
+    next(t for t in at.text_input if t.label == "👮 Tu nombre *").set_value("Guardia BA")
+    next(b for b in at.button if b.label == "💾 GUARDAR REGISTRO").click()
+    at = at.run()
+    assert not at.exception, at.exception
+    nuevo = wb.worksheet("permisos").as_dicts()[-1]
+    assert nuevo["nombre"] == "DIAZ, EVA" and nuevo["planta"] == "Casa Central"
+    assert nuevo["sin_retorno"] == "SI" and nuevo["hora_entrada"] == "16:00"
+    assert nuevo["minutos_reales"] == 180.0
+
+
+def test_rrhh_edita_horario_especial_desde_el_panel(wb):
+    _horarios_bsas(wb)
+    # El Panel RRHH solo muestra el resto de las secciones si la planta tiene permisos.
+    wb.worksheet("permisos").append_row(["P2", "2026-10-01", "3001", "DIAZ, EVA", "13:00", "16:00", "SI",
+                                         "Banco / Cajero", "SI", 180, 3, "Guardia", "Casa Central", ""])
+    at = _login(_app(wb))
+    at = _ir(at, "Casa Central Bs. As.", "🟢 Panel RRHH")
+    at = _login_rrhh(at)
+    sel = at.selectbox(key="sel_editar_horario")
+    sel.select(next(o for o in sel.options if "Jornada completa" in o))
+    at = at.run()
+    [t for t in at.time_input if t.label == "Hora de fin de turno"][-1].set_value(time(15, 30))
+    at.text_input(key="quien_editar_horario_H2").set_value("Ailen")
+    next(b for b in at.button if b.label == "💾 Guardar cambios").click()
+    at = at.run()
+    assert not at.exception, at.exception
+    h2 = wb.worksheet("config_horarios").as_dicts()[1]
+    assert h2["hora_fin"] == "15:30" and h2["solo_legajos"] == "3001"
+    assert "editado por Ailen" in h2["creado_por"]
 
 
 def test_rrhh_inactivar_no_pisa_planta(wb):

@@ -19,8 +19,13 @@ APP_ICON      = "🏭"
 # PASSWORD_RRHH_INICIAL de .streamlit/secrets.toml.
 
 # ── Turnos ─────────────────────────────────────────────────────
-HORA_FIN_TURNO      = time(15, 0)   # fin de turno general (para S/R)
+HORA_FIN_TURNO      = time(15, 0)   # fin de turno general de San Juan (calcula S/R)
+HORA_FIN_TURNO_BSAS = time(17, 0)   # fin de jornada general de Bs. As. (8 a 17): solo sugiere la entrada en S/R
 ALMUERZO_H          = 0.5           # descuento de almuerzo en métricas MOD
+
+# Días para 'dias_semana' de config_horarios (vacío = todos los días).
+DIAS_SEMANA = {"LU": "Lunes", "MA": "Martes", "MI": "Miércoles", "JU": "Jueves",
+               "VI": "Viernes", "SA": "Sábado", "DO": "Domingo"}
 
 # Las excepciones temporales de horario (ej: reducción horaria) ya NO se
 # configuran acá — se cargan desde el Panel RRHH → "Horarios especiales",

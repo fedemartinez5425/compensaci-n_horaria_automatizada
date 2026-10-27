@@ -19,6 +19,9 @@ from config import SCOPES, MOTIVO_MAP, LIDERES_SJ, MOTIVOS_LISTA
 # Motivos oficiales indexados en minúscula, para reconocerlos tal cual.
 _MOTIVOS_CANONICOS = {m.lower(): m for m in MOTIVOS_LISTA}
 
+# Columnas de config_horarios que una hoja vieja puede no tener (fallback seguro).
+COLUMNAS_OPCIONALES_HORARIOS = ("excluidos_legajos", "dias_semana", "solo_legajos")
+
 
 def normalizar_motivo(raw: str) -> str:
     """
@@ -160,7 +163,7 @@ def leer_config_horarios(_gc) -> pd.DataFrame:
     except gspread.exceptions.WorksheetNotFound:
         return pd.DataFrame(columns=[
             "id", "planta", "desde", "hasta", "hora_fin",
-            "descripcion", "activo", "excluidos_legajos",
+            "descripcion", "activo", *COLUMNAS_OPCIONALES_HORARIOS,
             "creado_por", "timestamp",
         ])
     df = pd.DataFrame(ws.get_all_records())
@@ -171,10 +174,11 @@ def leer_config_horarios(_gc) -> pd.DataFrame:
     df["planta"]   = df["planta"].astype(str).str.strip()
     df["activo"]   = df["activo"].astype(str).str.upper().str.strip()
     df["hora_fin"] = df["hora_fin"].astype(str).str.strip()  # formato "HH:MM"
-    if "excluidos_legajos" not in df.columns:
-        df["excluidos_legajos"] = ""  # hojas creadas antes de esta columna existir
-    else:
-        df["excluidos_legajos"] = df["excluidos_legajos"].astype(str).replace("nan", "")
+    for col in COLUMNAS_OPCIONALES_HORARIOS:
+        if col not in df.columns:
+            df[col] = ""  # hojas creadas antes de que existiera esta columna
+        else:
+            df[col] = df[col].astype(str).replace("nan", "").str.strip()
     return df
 
 
@@ -344,11 +348,11 @@ def verificar_compensacion_duplicada(comp_df: pd.DataFrame, legajo: str, fecha) 
 def guardar_excepcion_horario(gc, fila: dict) -> None:
     """
     Agrega una excepción de horario nueva a la hoja config_horarios.
-    Si se cargaron personas excluidas y la hoja no tiene la columna
-    'excluidos_legajos', falla con un mensaje claro en vez de correr
-    los valores de columna sin avisar.
+    Las columnas opcionales (excluidos_legajos, dias_semana, solo_legajos)
+    pueden faltar en la hoja solo si vienen vacías; si traen datos y la
+    columna no existe, falla con un mensaje claro en vez de correr valores.
     """
-    opcionales = () if fila.get("excluidos_legajos") else ("excluidos_legajos",)
+    opcionales = tuple(c for c in COLUMNAS_OPCIONALES_HORARIOS if not fila.get(c))
     _append_por_encabezado(
         get_workbook(gc).worksheet("config_horarios"), fila, opcionales=opcionales,
     )
@@ -370,11 +374,46 @@ def desactivar_excepcion_horario(gc, id_excepcion: str) -> bool:
     return True
 
 
+CAMPOS_EDITABLES_HORARIO = ("desde", "hasta", "hora_fin", "descripcion", *COLUMNAS_OPCIONALES_HORARIOS)
+
+
+def editar_excepcion_horario(gc, id_excepcion: str, cambios: dict, editado_por: str) -> bool:
+    """
+    Edita campos de un horario especial ya cargado (fechas, hora de fin,
+    descripción, días, personas incluidas/excluidas) sin recrearlo, y deja
+    auditoría en 'creado_por'. Escribe por nombre de columna. Si se quiere
+    guardar un dato en una columna opcional que la hoja no tiene, lanza
+    ValueError antes de escribir nada.
+    """
+    invalidos = set(cambios) - set(CAMPOS_EDITABLES_HORARIO)
+    if invalidos:
+        raise ValueError(f"Campos no editables: {', '.join(sorted(invalidos))}")
+    ws = get_workbook(gc).worksheet("config_horarios")
+    headers = _encabezados(ws)
+    faltan = [c for c, v in cambios.items() if c not in headers and v]
+    if faltan:
+        raise ValueError(
+            f"La hoja 'config_horarios' no tiene la columna {', '.join(faltan)}. "
+            "Agregala una vez (al final, después de 'timestamp') y volvé a intentar."
+        )
+    cell = ws.find(id_excepcion, in_column=_col(headers, "id"))
+    if not cell:
+        return False
+    for campo, valor in cambios.items():
+        if campo in headers:
+            ws.update_cell(cell.row, _col(headers, campo), valor)
+    col_quien = _col(headers, "creado_por")
+    previo = ws.cell(cell.row, col_quien).value or ""
+    marca = f"editado por {editado_por.strip()} {datetime.now():%d/%m/%Y %H:%M}"
+    ws.update_cell(cell.row, col_quien, f"{previo} | {marca}" if previo else marca)
+    leer_config_horarios.clear()
+    return True
+
+
 def editar_excluidos_horario(gc, id_excepcion: str, legajos_excluidos: list[str]) -> bool:
     """
     Reemplaza la lista completa de legajos excluidos de una excepción de
-    horario ya cargada (ej: agregar o sacar gente de "sigue con horario
-    normal") sin tener que borrar y recrear todo el horario especial.
+    horario ya cargada sin tener que borrar y recrear todo el horario especial.
     """
     ws = get_workbook(gc).worksheet("config_horarios")
     headers = _encabezados(ws)

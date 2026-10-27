@@ -85,9 +85,10 @@ def leer_config_horarios(xl: pd.ExcelFile) -> pd.DataFrame:
     df["planta"] = df["planta"].astype(str).str.strip()
     df["activo"] = df["activo"].astype(str).str.upper().str.strip()
     df["hora_fin"] = df["hora_fin"].apply(lambda v: _hora(v).strftime("%H:%M") if _hora(v) else str(v))
-    if "excluidos_legajos" not in df.columns:
-        df["excluidos_legajos"] = ""
-    df["excluidos_legajos"] = df["excluidos_legajos"].fillna("").astype(str)
+    for col in ("excluidos_legajos", "dias_semana", "solo_legajos"):
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str)
     return df
 
 

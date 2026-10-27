@@ -5,10 +5,11 @@ Toda la lógica de negocio de permisos y compensaciones.
 No conoce Google Sheets ni Streamlit.
 """
 import secrets
+import unicodedata
 import pandas as pd
 from datetime import date, datetime, time
 from config import (
-    HORA_FIN_TURNO,
+    HORA_FIN_TURNO, HORA_FIN_TURNO_BSAS, DIAS_SEMANA,
     TOPE_HORAS_NORMAL, TOPE_HORAS_LIDER,
     MOTIVOS_FUERA_TOPE,
     MOTIVOS_COMPENSAN_SJ, MOTIVOS_COMPENSAN_LIDERES_SJ,
@@ -68,10 +69,35 @@ def generar_id(prefijo: str = "P") -> str:
 # HORARIO DE FIN DE TURNO (con excepciones configurables desde la UI)
 # ─────────────────────────────────────────────
 def _parse_excluidos(valor) -> list[str]:
-    """Convierte el campo 'excluidos_legajos' (string separado por comas) en lista."""
+    """Convierte un campo de legajos separados por coma ('excluidos_legajos', 'solo_legajos') en lista."""
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return []
     return [x.strip() for x in str(valor).split(",") if x.strip()]
+
+
+_DIA_A_NUMERO = {cod: i for i, cod in enumerate(DIAS_SEMANA)}  # LU=0 … DO=6, como date.weekday()
+
+
+def parse_dias_semana(valor) -> set[int] | None:
+    """
+    'LU,MA' → {0, 1}. Vacío → None (todos los días). Acepta nombres completos
+    o con/sin acento ('lunes', 'Miércoles'): se usan las 2 primeras letras.
+    Si hay texto pero ningún día reconocible → set() (la fila se ignora).
+    """
+    dias = _parse_excluidos(valor)
+    if not dias:
+        return None
+    out = set()
+    for d in dias:
+        cod = unicodedata.normalize("NFKD", d).encode("ascii", "ignore").decode().upper()[:2]
+        if cod in _DIA_A_NUMERO:
+            out.add(_DIA_A_NUMERO[cod])
+    return out
+
+
+def hora_fin_normal(planta_key: str) -> time:
+    """Fin de turno sin horario especial: San Juan 15:00, Bs. As. 17:00."""
+    return HORA_FIN_TURNO_BSAS if planta_key == "Casa Central" else HORA_FIN_TURNO
 
 
 def excepcion_horario_activa(
@@ -85,33 +111,59 @@ def excepcion_horario_activa(
     (leída de la hoja config_horarios, cargada desde el Panel RRHH), o
     None si no hay ninguna activa (rige el horario general).
 
-    Si se pasa `legajo` y esa persona está en la lista de excluidos de la
-    excepción (personas que siguen con el horario normal, ej: EXEMPT que
-    hace jornada completa), la excepción NO se considera activa para ella.
+    Cada fila puede limitarse con columnas opcionales:
+    - `dias_semana` ('LU,MA'): solo rige esos días. Vacío = todos.
+    - `solo_legajos`: rige SOLO para esas personas (ej: rotativos que hacen
+      jornada completa los lunes). Le gana a una fila general de la planta.
+    - `excluidos_legajos`: personas a las que una fila general NO se les
+      aplica (siguen con el horario normal o con la siguiente fila que les toque).
+
+    Orden: primero una fila con `solo_legajos` que incluya a la persona;
+    si no hay, la primera fila general donde no esté excluida. Sin `legajo`
+    solo se miran las filas generales.
     """
     if fecha is None:
         fecha = date.today()
     if config_horarios_df is None or config_horarios_df.empty:
         return None
     activas = config_horarios_df[config_horarios_df["activo"] == "SI"]
+    especificas, generales = [], []
     for _, row in activas.iterrows():
-        if row["desde"] <= fecha <= row["hasta"] and row["planta"] in (planta_key, "Todas"):
-            excluidos = _parse_excluidos(row.get("excluidos_legajos", ""))
-            if legajo and legajo in excluidos:
-                continue  # esta persona está exceptuada de la excepción — sigue con horario normal
-            try:
-                hora_fin = datetime.strptime(str(row["hora_fin"]), "%H:%M").time()
-            except ValueError:
-                continue  # fila mal cargada, la ignoramos en vez de romper la app
-            return {
-                "id":          row.get("id", ""),
-                "descripcion": row.get("descripcion", "Horario especial"),
-                "planta":      row["planta"],
-                "desde":       row["desde"],
-                "hasta":       row["hasta"],
-                "hora_fin":    hora_fin,
-                "excluidos":   excluidos,
-            }
+        try:
+            if not (row["desde"] <= fecha <= row["hasta"]):
+                continue
+        except TypeError:
+            continue  # fecha vacía o inválida: fila mal cargada
+        if row["planta"] not in (planta_key, "Todas"):
+            continue
+        dias = parse_dias_semana(row.get("dias_semana", ""))
+        if dias is not None and fecha.weekday() not in dias:
+            continue
+        try:
+            hora_fin = datetime.strptime(str(row["hora_fin"]), "%H:%M").time()
+        except ValueError:
+            continue  # fila mal cargada, la ignoramos en vez de romper la app
+        exc = {
+            "id":           row.get("id", ""),
+            "descripcion":  row.get("descripcion", "Horario especial"),
+            "planta":       row["planta"],
+            "desde":        row["desde"],
+            "hasta":        row["hasta"],
+            "hora_fin":     hora_fin,
+            "excluidos":    _parse_excluidos(row.get("excluidos_legajos", "")),
+            "solo_legajos": _parse_excluidos(row.get("solo_legajos", "")),
+            "dias":         dias,
+        }
+        (especificas if exc["solo_legajos"] else generales).append(exc)
+
+    if legajo:
+        for exc in especificas:
+            if legajo in exc["solo_legajos"]:
+                return exc
+    for exc in generales:
+        if legajo and legajo in exc["excluidos"]:
+            continue  # esta persona está exceptuada de la excepción
+        return exc
     return None
 
 
@@ -122,13 +174,13 @@ def obtener_hora_fin_turno(
     legajo: str = None,
 ) -> time:
     """
-    Hora de "fin de turno" vigente para calcular permisos Sin Retorno.
-    Si hay una excepción activa (cargada desde el Panel RRHH) para esa
-    planta/fecha/persona, la usa; si no, devuelve el HORA_FIN_TURNO
-    general de config.py. No afecta los topes anuales de compensación.
+    Hora de "fin de turno" vigente para esa planta/fecha/persona.
+    Si hay una excepción activa (cargada desde el Panel RRHH) la usa; si no,
+    el horario normal de la planta (`hora_fin_normal`). En San Juan calcula
+    los S/R; en Bs. As. solo sugiere la hora de entrada. No afecta topes.
     """
     exc = excepcion_horario_activa(config_horarios_df, planta_key, fecha, legajo)
-    return exc["hora_fin"] if exc else HORA_FIN_TURNO
+    return exc["hora_fin"] if exc else hora_fin_normal(planta_key)
 
 
 # ─────────────────────────────────────────────
