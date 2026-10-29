@@ -13,7 +13,7 @@ from services.permisos_service import (
     horas_comprometidas_año, horas_fuera_tope_año, puede_compensar_por_politica,
     calcular_saldos, kpi_compensacion_acumulado, indicador_mensual,
     validar_permiso, obtener_hora_fin_turno, excepcion_horario_activa, generar_id,
-    parse_dias_semana, hora_fin_normal,
+    parse_dias_semana, hora_fin_normal, filtrar_permisos_rango,
 )
 
 
@@ -246,3 +246,17 @@ def test_san_juan_sin_columnas_nuevas_sigue_igual():
     h = _horarios()  # hoja sin dias_semana ni solo_legajos
     assert obtener_hora_fin_turno(h, "Fábrica", LUNES) == time(11)
     assert obtener_hora_fin_turno(h, "Fábrica", date(2026, 10, 25)) == time(11)  # domingo: sin días = todos
+
+
+# ── Filtro por rango (mes productivo) ────────────────────────
+def test_filtrar_permisos_rango_inclusive_y_ordenado():
+    p = pd.DataFrame({
+        "fecha": pd.to_datetime(["2026-10-24", "2026-09-28", "2026-10-23", "2026-09-27", "2026-10-01"]),
+        "nombre": ["E", "B", "D", "A", "C"],
+    })
+    r = filtrar_permisos_rango(p, date(2026, 9, 28), date(2026, 10, 23))
+    assert r["nombre"].tolist() == ["B", "C", "D"]
+
+
+def test_filtrar_permisos_rango_vacio():
+    assert filtrar_permisos_rango(pd.DataFrame(), date(2026, 1, 1), date(2026, 1, 31)).empty

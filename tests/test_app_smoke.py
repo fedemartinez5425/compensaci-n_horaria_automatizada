@@ -260,3 +260,39 @@ def test_todas_las_pantallas_cargan_sin_error(wb, planta, pagina):
     if pagina != "🔵 Panel Guardia":
         at = _login_rrhh(at)
     assert not at.exception, at.exception
+
+
+def test_rrhh_detalle_por_rango_y_excel_con_filtros(wb):
+    import io
+    import openpyxl
+    from datetime import date
+    from ui.rrhh import _excel_detalle_permisos
+
+    at = _login(_app(wb))
+    at = _ir(at, "Fábrica San Juan", "🟢 Panel RRHH")
+    at = _login_rrhh(at)
+    rango = next(d for d in at.date_input if d.label == "Período (desde – hasta)")
+    rango.set_value((date(2026, 9, 1), date(2026, 9, 30)))
+    at = at.run()
+    assert not at.exception, at.exception
+    assert any("permisos del 01/09/2026 al 30/09/2026" in m.value for m in at.markdown)
+    det = next(df.value for df in at.dataframe if "Clasificación" in df.value.columns)
+    assert det["Nombre"].tolist() == ["PEREZ, ANA"]
+    assert det["Clasificación"].tolist() == ["HOURLY DIRECT"]
+
+    # Un rango sin permisos avisa en vez de romper.
+    rango = next(d for d in at.date_input if d.label == "Período (desde – hasta)")
+    rango.set_value((date(2026, 10, 1), date(2026, 10, 23)))
+    at = at.run()
+    assert any("No hay permisos en este período" in i.value for i in at.info)
+
+    # El Excel: título, tabla con filtros y formato condicional en Compensa.
+    ws = openpyxl.load_workbook(io.BytesIO(_excel_detalle_permisos(det, "Título"))).active
+    assert ws["A1"].value == "Título"
+    tabla = ws.tables["TablaPermisos"]
+    assert tabla.ref == "A3:L4"
+    assert [c.value for c in ws[3]][:3] == ["Fecha", "Legajo", "Nombre"]
+    assert ws["A4"].number_format == "DD/MM/YYYY" and ws["A4"].value.date() == date(2026, 9, 17)
+    assert ws["K4"].value == 295
+    assert ws.freeze_panes == "A4"
+    assert ws.conditional_formatting

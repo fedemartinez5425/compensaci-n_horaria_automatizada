@@ -11,11 +11,12 @@ import plotly.graph_objects as go
 from datetime import date, datetime
 import calendar as _cal
 
-from config import AÑOS, MESES, CLASIF_COLOR, DIAS_SEMANA
+from config import AÑOS, MESES, CLASIF_COLOR, DIAS_SEMANA, COLORES
 from services.permisos_service import (
     calcular_saldos, fmt_horas, generar_id,
     obtener_tope, horas_comprometidas_año,
     validar_compensacion, excepcion_horario_activa, hora_fin_normal,
+    filtrar_permisos_rango,
 )
 from repositories.sheets_repo import (
     guardar_compensacion, corregir_permiso,
@@ -36,6 +37,91 @@ def _caption(text: str):
         f'<p style="color:#2C3E50;font-size:0.95rem;margin-top:-4px;">{text_html}</p>',
         unsafe_allow_html=True,
     )
+
+
+def _excel_detalle_permisos(det: pd.DataFrame, titulo: str) -> bytes:
+    """
+    Excel del detalle de permisos para Producción: título, tabla de Excel con
+    filtros y filas a bandas, y la columna Compensa en verde (SI) / rojo (NO).
+    """
+    import io
+    import openpyxl
+    from openpyxl.styles import PatternFill, Font, Alignment
+    from openpyxl.formatting.rule import CellIsRule
+    from openpyxl.utils import get_column_letter
+    from openpyxl.worksheet.table import Table, TableStyleInfo
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Permisos"
+
+    n_cols = len(det.columns)
+    ultima_col = get_column_letter(n_cols)
+
+    # Título (fila 1), fila 2 en blanco, encabezados de la tabla en la fila 3.
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
+    ws["A1"] = titulo
+    ws["A1"].font = Font(bold=True, size=13, color="FFFFFF")
+    ws["A1"].fill = PatternFill("solid", fgColor=COLORES["primario"].lstrip("#"))
+    ws["A1"].alignment = Alignment(vertical="center", indent=1)
+    ws.row_dimensions[1].height = 28
+
+    fila_enc = 3
+    for ci, col_name in enumerate(det.columns, 1):
+        c = ws.cell(row=fila_enc, column=ci, value=col_name)
+        c.font = Font(bold=True, color="FFFFFF", size=11)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    ws.row_dimensions[fila_enc].height = 22
+
+    centradas = {"Fecha", "Legajo", "Salida", "Entrada", "S/R", "Compensa",
+                 "Minutos reales", "Hs. (redondeadas)"}
+    for ri, fila in enumerate(det.itertuples(index=False), fila_enc + 1):
+        for ci, (col_name, valor) in enumerate(zip(det.columns, fila), 1):
+            if pd.isna(valor):
+                valor = None
+            elif hasattr(valor, "item"):   # numpy → tipo nativo de Python
+                valor = valor.item()
+            c = ws.cell(row=ri, column=ci, value=valor)
+            c.font = Font(size=10)
+            if col_name == "Fecha":
+                c.number_format = "DD/MM/YYYY"
+            elif col_name == "Hs. (redondeadas)":
+                c.number_format = "0.0"
+            if col_name in centradas:
+                c.alignment = Alignment(horizontal="center")
+
+    ultima_fila = fila_enc + max(len(det), 1)
+    tabla = Table(displayName="TablaPermisos", ref=f"A{fila_enc}:{ultima_col}{ultima_fila}")
+    tabla.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    ws.add_table(tabla)
+
+    if "Compensa" in det.columns:
+        col_comp = get_column_letter(list(det.columns).index("Compensa") + 1)
+        rango = f"{col_comp}{fila_enc + 1}:{col_comp}{ultima_fila}"
+        for valor, fondo, letra in (("SI", "C6EFCE", "006100"),
+                                    ("NO", "FFC7CE", "9C0006"),
+                                    ("ANULADO", "EDEDED", "7F7F7F")):
+            ws.conditional_formatting.add(rango, CellIsRule(
+                operator="equal", formula=[f'"{valor}"'],
+                fill=PatternFill("solid", bgColor=fondo), font=Font(bold=True, color=letra),
+            ))
+
+    anchos = {"Fecha": 12, "Legajo": 10, "Nombre": 36, "Sector": 22, "Clasificación": 18,
+              "Salida": 10, "Entrada": 10, "S/R": 7, "Motivo": 30, "Compensa": 12,
+              "Minutos reales": 12, "Hs. (redondeadas)": 13}
+    for ci, col_name in enumerate(det.columns, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = anchos.get(col_name, 14)
+
+    ws.freeze_panes = f"A{fila_enc + 1}"
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = f"{fila_enc}:{fila_enc}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def render(
@@ -588,21 +674,61 @@ def render(
     # ── Detalle del período ───────────────────────────────────
     st.divider()
     st.subheader("🔍 Detalle de permisos del período")
-    if not p_f.empty:
-        det = p_f[[
-            "fecha", "legajo", "nombre", "hora_salida", "hora_entrada",
-            "sin_retorno", "motivo", "compensa", "horas_redondeadas", "minutos_reales"
-        ]].copy()
-        det["fecha"] = det["fecha"].dt.strftime("%d/%m/%Y")
-        det["minutos_reales"] = det["minutos_reales"].apply(
-            lambda m: f"{int(m)} min" if pd.notna(m) and m > 0 else "—"
-        )
-        det.columns = ["Fecha", "Legajo", "Nombre", "Salida", "Entrada",
-                       "S/R", "Motivo", "Compensa", "Hs. (redondeadas)", "Minutos reales"]
-        _caption("Revisá la columna Minutos reales si sospechás que el redondeo no fue correcto.")
-        st.dataframe(det, use_container_width=True, hide_index=True)
+    _caption(
+        "Elegí el rango de fechas (por ejemplo el **mes productivo**, que no coincide con el "
+        "mes calendario) y descargá el Excel con filtros para Producción."
+    )
+    _primer_dia = date(año_sel, mes_sel, 1)
+    _rango = st.date_input(
+        "Período (desde – hasta)",
+        value=(_primer_dia, _ultimo_dia),
+        format="DD/MM/YYYY",
+        # La key depende del mes elegido arriba para que el rango se reinicie al cambiarlo.
+        key=f"rango_detalle_{año_sel}_{mes_sel}",
+    )
+    if not isinstance(_rango, (tuple, list)) or len(_rango) < 2:
+        st.info("Elegí también la fecha de fin del período.")
     else:
-        st.info("No hay permisos en este período.")
+        _desde_det, _hasta_det = _rango[0], _rango[1]
+        p_det = filtrar_permisos_rango(permisos_activos, _desde_det, _hasta_det)
+        if not p_det.empty:
+            det = pd.DataFrame({
+                "Fecha":             p_det["fecha"].dt.date,
+                "Legajo":            p_det["legajo"],
+                "Nombre":            p_det["nombre"],
+                "Sector":            p_det["legajo"].map(sector_dict).fillna(""),
+                "Clasificación":     p_det["legajo"].map(clasif_dict).fillna(""),
+                "Salida":            p_det["hora_salida"],
+                "Entrada":           p_det["hora_entrada"],
+                "S/R":               p_det["sin_retorno"],
+                "Motivo":            p_det["motivo"],
+                "Compensa":          p_det["compensa"],
+                "Minutos reales":    pd.to_numeric(p_det["minutos_reales"], errors="coerce").fillna(0).round(0).astype(int),
+                "Hs. (redondeadas)": p_det["horas_redondeadas"],
+            })
+            _periodo_txt = f"{_desde_det:%d/%m/%Y} al {_hasta_det:%d/%m/%Y}"
+            _caption(
+                f"**{len(det)}** permisos del {_periodo_txt}. Revisá la columna Minutos reales "
+                "si sospechás que el redondeo no fue correcto."
+            )
+            st.dataframe(
+                det, use_container_width=True, hide_index=True,
+                column_config={"Fecha": st.column_config.DateColumn(format="DD/MM/YYYY")},
+            )
+            try:
+                st.download_button(
+                    "⬇️ Descargar Excel del período",
+                    data=_excel_detalle_permisos(
+                        det, f"GILDAN — Permisos del {_periodo_txt} | {planta_activa}"
+                    ),
+                    file_name=f"permisos_{_desde_det:%Y-%m-%d}_al_{_hasta_det:%Y-%m-%d}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_detalle_permisos",
+                )
+            except Exception as _xl_err:
+                st.caption(f"Excel no disponible: {_xl_err}")
+        else:
+            st.info("No hay permisos en este período.")
 
     # ── Horarios especiales ────────────────────────────────────
     st.divider()

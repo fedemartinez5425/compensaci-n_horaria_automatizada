@@ -263,6 +263,24 @@ def puede_compensar_por_politica(motivo: str, planta_key: str, es_lider: bool) -
 
 
 # ─────────────────────────────────────────────
+# FILTRO POR RANGO DE FECHAS
+# ─────────────────────────────────────────────
+def filtrar_permisos_rango(permisos_df: pd.DataFrame, desde: date, hasta: date) -> pd.DataFrame:
+    """
+    Permisos con fecha entre desde y hasta (ambos inclusive), ordenados por fecha.
+    Sirve para el mes productivo, que no coincide con el mes calendario.
+    """
+    if permisos_df.empty:
+        return permisos_df.copy()
+    fechas = permisos_df["fecha"].dt.date
+    return (
+        permisos_df[(fechas >= desde) & (fechas <= hasta)]
+        .sort_values(["fecha", "nombre"])
+        .reset_index(drop=True)
+    )
+
+
+# ─────────────────────────────────────────────
 # SALDOS
 # ─────────────────────────────────────────────
 def calcular_saldos(
